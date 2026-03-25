@@ -1,8 +1,13 @@
 #!bin/python3
 
-/env
-/output
-
-/test_image.py
-
-
+.env
+.env.*
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
