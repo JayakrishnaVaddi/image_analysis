@@ -264,59 +264,37 @@ def save_artifacts(
     return saved_files
 
 
-def run_analysis(
-    mode: str,
-    image_path: Optional[str] = None,
-    plate_id: Optional[str] = None,
-    mongo_uri: Optional[str] = None,
-    camera_index: int = 0,
+def analyze_image(image: np.ndarray):
+    """
+    Run the reusable preprocessing and slab-analysis pipeline on one image.
+    """
+
+    analysis_input = preprocess_image(image)
+    analyzer = PlateAnalyzer()
+    analysis_result = analyzer.analyze(analysis_input)
+    return analysis_input, analysis_result
+
+
+def persist_analysis_result(
+    input_image: np.ndarray,
+    analysis_result,
+    plate_id: Optional[str],
+    mongo_uri: Optional[str],
     display: bool = False,
 ) -> Dict[str, Any]:
     """
-    Run one analysis pass and return the saved run information.
+    Persist one analyzed result using the existing artifact and payload flow.
     """
 
     run_id = f"{OUTPUT.run_directory_prefix}{timestamp_for_filename()}"
     run_dir = create_run_directory(run_id)
     timestamp = current_iso_timestamp()
-    args = argparse.Namespace(
-        mode=mode,
-        image=image_path,
-        plate_id=plate_id,
-        mongo_uri=mongo_uri,
-        camera_index=camera_index,
-        display=display,
-    )
-
-    try:
-        image = acquire_image(args)
-    except (CameraCaptureError, ImageLoadError, ValueError, OSError) as exc:
-        LOGGER.error("Failed to acquire image: %s", exc)
-        raise
-
-    analysis_input = preprocess_image(image)
-    analyzer = PlateAnalyzer()
-
-    try:
-        analysis_result = analyzer.analyze(analysis_input)
-    except SlabDetectionError as exc:
-        LOGGER.error("Slab detection failed: %s", exc)
-        original_failure_path = run_dir / "original_failed_detection.jpg"
-        analyzed_failure_path = run_dir / "analyzed_input_failed_detection.jpg"
-        debug_failure_path = run_dir / "slab_detection_failed.jpg"
-        save_image(original_failure_path, image)
-        save_image(analyzed_failure_path, analysis_input)
-        if exc.debug_image is not None:
-            save_image(debug_failure_path, exc.debug_image)
-        raise
-
-    saved_files = save_artifacts(run_dir, image, analysis_result)
+    saved_files = save_artifacts(run_dir, input_image, analysis_result)
     json_output_path = run_dir / "results.json"
     final_plate_id = plate_id or run_id
     run_document = build_run_document(final_plate_id, timestamp, analysis_result)
-
     mongo_document = build_mongo_document(final_plate_id, timestamp, analysis_result)
-    mongo_inserted_id = upload_run_document(mongo_document, args.mongo_uri)
+    mongo_inserted_id = upload_run_document(mongo_document, mongo_uri)
 
     save_json(json_output_path, run_document)
     LOGGER.info("Saved JSON results to %s", json_output_path)
@@ -336,6 +314,79 @@ def run_analysis(
     }
 
 
+def persist_live_analysis_snapshot(
+    snapshot,
+    plate_id: Optional[str],
+    mongo_uri: Optional[str],
+    display: bool = False,
+) -> Dict[str, Any]:
+    """
+    Persist one successful live-analysis snapshot as the session's saved run.
+    """
+
+    return persist_analysis_result(
+        input_image=snapshot.source_frame,
+        analysis_result=snapshot.analysis_result,
+        plate_id=plate_id,
+        mongo_uri=mongo_uri,
+        display=display,
+    )
+
+
+def run_analysis(
+    mode: str,
+    image_path: Optional[str] = None,
+    plate_id: Optional[str] = None,
+    mongo_uri: Optional[str] = None,
+    camera_index: int = 0,
+    display: bool = False,
+) -> Dict[str, Any]:
+    """
+    Run one analysis pass and return the saved run information.
+    """
+
+    args = argparse.Namespace(
+        mode=mode,
+        image=image_path,
+        plate_id=plate_id,
+        mongo_uri=mongo_uri,
+        camera_index=camera_index,
+        display=display,
+    )
+
+    try:
+        image = acquire_image(args)
+    except (CameraCaptureError, ImageLoadError, ValueError, OSError) as exc:
+        LOGGER.error("Failed to acquire image: %s", exc)
+        raise
+
+    analysis_input = preprocess_image(image)
+
+    try:
+        analyzer = PlateAnalyzer()
+        analysis_result = analyzer.analyze(analysis_input)
+    except SlabDetectionError as exc:
+        run_id = f"{OUTPUT.run_directory_prefix}{timestamp_for_filename()}"
+        run_dir = create_run_directory(run_id)
+        LOGGER.error("Slab detection failed: %s", exc)
+        original_failure_path = run_dir / "original_failed_detection.jpg"
+        analyzed_failure_path = run_dir / "analyzed_input_failed_detection.jpg"
+        debug_failure_path = run_dir / "slab_detection_failed.jpg"
+        save_image(original_failure_path, image)
+        save_image(analyzed_failure_path, analysis_input)
+        if exc.debug_image is not None:
+            save_image(debug_failure_path, exc.debug_image)
+        raise
+
+    return persist_analysis_result(
+        input_image=image,
+        analysis_result=analysis_result,
+        plate_id=plate_id,
+        mongo_uri=args.mongo_uri,
+        display=display,
+    )
+
+
 def main() -> int:
     """
     Execute the end-to-end image analysis pipeline.
@@ -345,14 +396,25 @@ def main() -> int:
     parser = build_argument_parser()
     args = parser.parse_args()
     try:
-        run_analysis(
-            mode=args.mode,
-            image_path=args.image,
-            plate_id=args.plate_id,
-            mongo_uri=args.mongo_uri,
-            camera_index=args.camera_index,
-            display=args.display,
-        )
+        if args.mode == "live":
+            from session_orchestrator import SESSION_ORCHESTRATOR
+
+            SESSION_ORCHESTRATOR.run_triggered_session(
+                plate_id=args.plate_id,
+                mongo_uri=args.mongo_uri,
+                camera_index=args.camera_index,
+                display=args.display,
+                persist_result=persist_live_analysis_snapshot,
+            )
+        else:
+            run_analysis(
+                mode=args.mode,
+                image_path=args.image,
+                plate_id=args.plate_id,
+                mongo_uri=args.mongo_uri,
+                camera_index=args.camera_index,
+                display=args.display,
+            )
     except (CameraCaptureError, ImageLoadError, ValueError, OSError, SlabDetectionError) as exc:
         LOGGER.error("Analysis failed: %s", exc)
         return 1

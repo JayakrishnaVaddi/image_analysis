@@ -109,8 +109,8 @@ class CameraConfig:
     rpicam_timeout_ms: int = 1500
     rpicam_command_candidates: Tuple[str, ...] = ("rpicam-still", "libcamera-still")
     rpicam_extra_args: Tuple[str, ...] = ("--nopreview",)
-    stream_width: int = 1280
-    stream_height: int = 960
+    stream_width: int = 4056
+    stream_height: int = 3040
     stream_framerate: int = 12
     rpicam_video_command_candidates: Tuple[str, ...] = ("rpicam-vid", "libcamera-vid")
 
@@ -139,12 +139,27 @@ class RunTimingConfig:
     production_wait_seconds: int = 600
 
 
+@dataclass(frozen=True)
+class VideoStreamConfig:
+    """
+    Tunables for live annotated frame streaming.
+    """
+
+    endpoint_env_var: str = "VIDEO_STREAM_ENDPOINT"
+    target_fps: int = 4
+    jpeg_quality: int = 85
+    reconnect_delay_seconds: float = 2.0
+    send_timeout_seconds: float = 5.0
+    queue_size: int = 2
+
+
 PLATE_GEOMETRY = PlateGeometry()
 DETECTION = DetectionConfig()
 OUTPUT = OutputConfig()
 CAMERA = CameraConfig()
 MONGO = MongoConfig()
 RUN_TIMING = RunTimingConfig()
+VIDEO_STREAM = VideoStreamConfig()
 PREPROCESS_CROP = PreprocessCropConfig()
 MANUAL_CROP = ManualCropConfig()
 

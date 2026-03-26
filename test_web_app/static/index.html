@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Image Analysis Test Harness</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef1e7;
+      --panel: #fbfcf7;
+      --ink: #1f2b22;
+      --muted: #637066;
+      --accent: #1f6b4f;
+      --accent-strong: #184f3b;
+      --border: #d7ded1;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", Helvetica, Arial, sans-serif;
+      background:
+        radial-gradient(circle at top, rgba(31, 107, 79, 0.10), transparent 30%),
+        linear-gradient(180deg, #f6f8f1 0%, var(--bg) 100%);
+      color: var(--ink);
+    }
+
+    .page {
+      min-height: 100vh;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+    }
+
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 20px;
+      background: var(--accent);
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: var(--accent-strong);
+    }
+
+    button:disabled {
+      opacity: 0.65;
+      cursor: default;
+    }
+
+    .stage {
+      flex: 1;
+      display: grid;
+      place-items: center;
+      padding: 28px 0;
+    }
+
+    .panel {
+      width: min(920px, 88vw);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 24px;
+      box-shadow: 0 18px 48px rgba(31, 43, 34, 0.08);
+    }
+
+    .meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status {
+      font-weight: 700;
+      color: var(--ink);
+      text-transform: lowercase;
+    }
+
+    .video-shell {
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      border-radius: 18px;
+      overflow: hidden;
+      background: #dde5da;
+      border: 1px solid var(--border);
+      display: grid;
+      place-items: center;
+    }
+
+    img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+      background: #dfe7dd;
+    }
+
+    .placeholder {
+      padding: 24px;
+      text-align: center;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="toolbar">
+      <button id="start-button">Start Test Session</button>
+    </div>
+
+    <div class="stage">
+      <section class="panel">
+        <div class="meta">
+          <div>Status: <span id="status" class="status">idle</span></div>
+          <div id="last-frame">Waiting for stream</div>
+        </div>
+        <div class="video-shell">
+          <img id="video-frame" alt="Annotated live stream" hidden>
+          <div id="placeholder" class="placeholder">
+            Start a test session to view the live annotated stream here.
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const startButton = document.getElementById("start-button");
+    const statusText = document.getElementById("status");
+    const lastFrameText = document.getElementById("last-frame");
+    const videoFrame = document.getElementById("video-frame");
+    const placeholder = document.getElementById("placeholder");
+
+    async function startSession() {
+      startButton.disabled = true;
+      try {
+        const response = await fetch("/api/start-session", { method: "POST" });
+        const payload = await response.json();
+        if (!response.ok && response.status !== 202) {
+          throw new Error(payload.message || "Unable to start test session");
+        }
+        renderStatus(payload);
+      } catch (error) {
+        statusText.textContent = "error";
+        lastFrameText.textContent = error.message;
+      } finally {
+        await refreshStatus();
+      }
+    }
+
+    function renderStatus(payload) {
+      const status = payload.status || "idle";
+      statusText.textContent = status;
+      startButton.disabled = payload.running === true;
+
+      if (payload.lastFrameAt) {
+        lastFrameText.textContent = `Last frame: ${payload.lastFrameAt}`;
+        videoFrame.hidden = false;
+        placeholder.hidden = true;
+        videoFrame.src = `/api/latest-frame.jpg?t=${Date.now()}`;
+      } else if (status === "running") {
+        lastFrameText.textContent = "Session running. Waiting for annotated frames...";
+      } else if (status === "completed") {
+        lastFrameText.textContent = "Session completed";
+      } else if (status === "error") {
+        lastFrameText.textContent = payload.lastError || "Session failed";
+      } else {
+        lastFrameText.textContent = "Waiting for stream";
+      }
+    }
+
+    async function refreshStatus() {
+      try {
+        const response = await fetch("/api/status", { cache: "no-store" });
+        const payload = await response.json();
+        renderStatus(payload);
+      } catch (_error) {
+        statusText.textContent = "error";
+        lastFrameText.textContent = "Unable to reach test web app";
+      }
+    }
+
+    startButton.addEventListener("click", startSession);
+    refreshStatus();
+    window.setInterval(refreshStatus, 1000);
+  </script>
+</body>
+</html>

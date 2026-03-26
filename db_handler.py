@@ -8,10 +8,10 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from config import MONGO
+from project_env import ENV_FILE_PATH, load_local_env
 
 try:
     from pymongo import MongoClient
@@ -22,30 +22,6 @@ except ImportError:  # pragma: no cover - depends on deployment environment.
 
 
 LOGGER = logging.getLogger(__name__)
-ENV_FILE_PATH = Path(__file__).resolve().parent / ".env"
-
-
-def load_local_env(env_path: Path = ENV_FILE_PATH) -> None:
-    """
-    Load key/value pairs from the project-local `.env` file.
-
-    This keeps MongoDB connectivity self-contained inside `image_analysis`
-    without requiring any external app wiring.
-    """
-
-    if not env_path.exists():
-        return
-
-    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip("\"'")
-        if key and key not in os.environ:
-            os.environ[key] = value
 
 
 def resolve_mongo_uri(mongo_uri: Optional[str] = None) -> Optional[str]:

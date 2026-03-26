@@ -14,6 +14,7 @@ import db_handler
 from config import HSV_THRESHOLDS, MONGO, PLATE_GEOMETRY
 from main import build_mongo_document, build_run_document, validate_binary_data
 from plate_analyzer import PlateAnalyzer
+from session_orchestrator import _resolve_session_duration_seconds
 
 
 class PlateAnalyzerTests(unittest.TestCase):
@@ -171,7 +172,7 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(sorted(inserted_documents[0].keys()), ["binaryData", "plateId", "timestamp"])
 
     def test_mongodb_upload_skips_when_no_uri_is_configured(self) -> None:
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True), patch.object(db_handler, "load_local_env", return_value=None):
             inserted_id = db_handler.upload_run_document(
                 {
                     "plateId": "plate-4",
@@ -182,6 +183,10 @@ class PayloadTests(unittest.TestCase):
             )
 
         self.assertIsNone(inserted_id)
+
+    def test_session_duration_uses_env_override(self) -> None:
+        with patch.dict("os.environ", {"SESSION_DURATION_SECONDS": "15"}, clear=True):
+            self.assertEqual(_resolve_session_duration_seconds(), 15)
 
 
 if __name__ == "__main__":
