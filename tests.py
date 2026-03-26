@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from command_handler import CommandHandler
 import db_handler
 from config import HSV_THRESHOLDS, MONGO, PLATE_GEOMETRY
 from main import build_mongo_document, build_run_document, validate_binary_data
@@ -187,6 +188,120 @@ class PayloadTests(unittest.TestCase):
     def test_session_duration_uses_env_override(self) -> None:
         with patch.dict("os.environ", {"SESSION_DURATION_SECONDS": "15"}, clear=True):
             self.assertEqual(_resolve_session_duration_seconds(), 15)
+
+
+class CommandHandlerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.handler = CommandHandler(camera_index=0)
+
+    def test_detect_colors_maps_placeholder_labels_in_request_order(self) -> None:
+        snapshot = SimpleNamespace(
+            analysis_result=SimpleNamespace(well_colors=["red", "yellow", None] + [None] * 93)
+        )
+
+        with patch("command_handler.capture_frame", return_value="frame"), patch(
+            "command_handler.analyze_live_frame",
+            return_value=snapshot,
+        ):
+            response = self.handler.handle_request({"wells": ["test", "demo"]})
+
+        self.assertEqual(
+            response,
+            {
+                "status": "success",
+                "colors": {
+                    "test": "red",
+                    "demo": "yellow",
+                },
+            },
+        )
+
+    def test_detect_colors_supports_explicit_well_numbers(self) -> None:
+        analyzed_colors = ["unknown"] * 96
+        analyzed_colors[0] = "red"
+        analyzed_colors[4] = "light_pink"
+        snapshot = SimpleNamespace(
+            analysis_result=SimpleNamespace(well_colors=analyzed_colors)
+        )
+
+        with patch("command_handler.capture_frame", return_value="frame"), patch(
+            "command_handler.analyze_live_frame",
+            return_value=snapshot,
+        ):
+            response = self.handler.handle_request({"wells": ["1", "well_5"]})
+
+        self.assertEqual(
+            response,
+            {
+                "status": "success",
+                "colors": {
+                    "1": "red",
+                    "well_5": "light pink",
+                },
+            },
+        )
+
+    def test_detect_colors_rejects_empty_wells_list(self) -> None:
+        with self.assertRaises(ValueError):
+            self.handler.handle_request({"wells": []})
+
+    def test_detect_colors_rejects_non_object_requests(self) -> None:
+        with self.assertRaises(ValueError):
+            self.handler.handle_request(["not", "an", "object"])
+
+    def test_health_action_returns_server_status_without_side_effects(self) -> None:
+        with patch("command_handler.SESSION_ORCHESTRATOR.is_session_active", return_value=False):
+            response = self.handler.handle_request({"action": "health"})
+
+        self.assertEqual(response["status"], "success")
+        self.assertEqual(response["server"], "raspberry-pi-image-analysis")
+        self.assertEqual(response["session_active"], False)
+        self.assertIn("start_test", response["supported_actions"])
+
+    def test_start_test_uses_existing_session_orchestration(self) -> None:
+        orchestrator_response = {
+            "status": "completed",
+            "session_duration_seconds": 720,
+            "analysis_run": {
+                "payload": {
+                    "plateId": "plate-123",
+                    "timestamp": "2026-03-24T00:00:00Z",
+                    "binaryData": [1] * 96,
+                }
+            },
+        }
+
+        with patch(
+            "command_handler.SESSION_ORCHESTRATOR.run_triggered_session",
+            return_value=orchestrator_response,
+        ) as run_session:
+            response = self.handler.handle_request(
+                {
+                    "action": "start_test",
+                    "plateId": "plate-123",
+                    "streamEndpoint": "http://127.0.0.1:8081/api/live-frame",
+                    "cameraIndex": 2,
+                }
+            )
+
+        self.assertEqual(response["status"], "success")
+        self.assertEqual(response["session"], orchestrator_response)
+        run_session.assert_called_once()
+
+    def test_start_test_returns_busy_when_session_is_already_active(self) -> None:
+        with patch(
+            "command_handler.SESSION_ORCHESTRATOR.run_triggered_session",
+            return_value={"status": "already_active"},
+        ):
+            response = self.handler.handle_request({"action": "start_test"})
+
+        self.assertEqual(
+            response,
+            {
+                "status": "busy",
+                "message": "A timed session is already active",
+            },
+        )
 
 
 if __name__ == "__main__":

@@ -5,14 +5,16 @@ detects a white 96-well slab, warps it into a top-down view, samples each well,
 classifies well colors using HSV thresholds, saves debug artifacts, exports a
 JSON record locally, and attempts to upload one document per run to MongoDB.
 
-On the `feature/live_stream` branch, live mode is session-based. When the
-external trigger starts this module in live mode, the Raspberry Pi now:
+On the `feature/live_stream` branch, the Raspberry Pi is intended to run as a
+server. The Pi listens for lightweight connection checks and real start-test
+requests. When a real test trigger arrives, the Raspberry Pi now:
 
-- starts camera-based analysis
+- starts camera-based live analysis
 - starts non-contact IR polling
-- turns on the heating pad
+- starts heating-pad control
 - optionally streams annotated live video to the configured endpoint
 - keeps the session active for the full timed window
+- returns the final result payload after the timed session completes
 - shuts everything down cleanly and returns to idle
 
 The current gene-readout workflow recognizes only `light pink`, `red`, and
@@ -33,6 +35,9 @@ and `8` columns in the warped top-down view.
 - `live_stream_service.py`: Annotated live-frame analysis and optional HTTP streaming.
 - `ir_sensor_service.py`: MLX90614 IR polling service.
 - `heating_pad_service.py`: Heating pad relay and status LED control.
+- `command_handler.py`: Request router for Pi server actions such as health checks, timed test triggers, and legacy one-shot color detection.
+- `socket_server.py`: Standalone newline-delimited JSON TCP server on port `5000`.
+- `test_web_app/`: Local harness that verifies Pi connectivity, starts a timed test on the Pi server, receives live frames, and displays the final result.
 - `output/`: Generated images and JSON result files.
 
 ## Manual Virtual Environment Setup
@@ -130,6 +135,166 @@ output size.
 Live camera mode uses `rpicam-vid` or `libcamera-vid` for the frame stream and
 `rpicam-still` or `libcamera-still` for one-shot capture paths that remain in
 the project.
+
+## Local Test Web App
+
+The local `test_web_app` in this folder now acts like a small external client
+for the Pi server. It supports only the Pi-side integration behaviors needed for
+this workflow:
+
+1. verify Pi connectivity
+2. send a real start-test trigger
+3. show live video during the timed session
+4. show the final result returned by the Pi server
+
+Start the test web app:
+
+```bash
+cd /home/pi/image_analysis
+python3 test_web_app/server.py --pi-host 127.0.0.1 --pi-port 5000 --public-host 127.0.0.1
+```
+
+Open `http://127.0.0.1:8081/` in a browser.
+
+Usage:
+
+- Click `Check Pi Connection` to send a lightweight `health` request.
+- Click `Start Test Session` to send a real `start_test` request to the Pi server.
+- While the session is running, the Pi posts annotated JPEG frames back to the
+  web app's `/api/live-frame` endpoint.
+- The page refreshes the latest live frame and shows the final JSON result once
+  the timed session finishes.
+
+Arguments:
+
+- `--host`: bind address for the web app
+- `--port`: bind port for the web app
+- `--pi-host`: host name or IP address of the Pi TCP server
+- `--pi-port`: port of the Pi TCP server
+- `--camera-index`: camera index forwarded to the Pi start-test request
+- `--public-host`: host name or IP address that the Pi should use to send live
+  frames back to the web app
+
+Assumptions and limitations:
+
+- The `start_test` socket request remains open until the timed session finishes.
+- The live stream is optional. If no `streamEndpoint` is provided or reachable,
+  the timed session still runs and completes.
+- Only one timed session can run at a time.
+- `main.py --mode live` still works as a direct CLI entry point for local runs,
+  but `socket_server.py` is now the intended integration surface for external
+  step-4 test triggers.
+
+## What Changed
+
+- Connected the Pi TCP server to the existing timed session orchestrator.
+- Added a lightweight `health` action with no hardware side effects.
+- Added a real `start_test` action that runs the full internal timed workflow.
+- Kept live streaming on the existing annotated-frame pipeline.
+- Updated the local `test_web_app` to check connectivity, start the remote test,
+  display live frames, and show the final result returned by the Pi.
+
+## Pi Server Architecture
+
+The Raspberry Pi now acts as a listening TCP server for two primary external
+behaviors:
+
+1. connection verification
+2. real start-test trigger
+
+The server stays idle until a request arrives. A connection check is
+lightweight and has no hardware side effects. A real `start_test` request runs
+the existing timed live-session workflow and returns the final result only after
+the session completes.
+
+High-level flow:
+
+1. The Pi runs `socket_server.py` and waits for newline-delimited JSON.
+2. An external client sends `{"action":"health"}` to verify reachability.
+3. When the user starts the real test, the client sends `{"action":"start_test", ...}`.
+4. The Pi validates the request and calls the existing timed session orchestrator.
+5. The orchestrator starts IR polling, heating-pad control, live camera analysis,
+   and optional annotated live-frame streaming.
+6. The session stays active for `SESSION_DURATION_SECONDS` and cleans up normally.
+7. The Pi returns the final session result JSON to the requesting client.
+8. The Pi returns to idle and is ready for the next trigger.
+
+This design reuses the existing session engine instead of creating a second,
+parallel workflow.
+
+## Running The Pi Server
+
+Start the Pi server:
+
+```bash
+cd /home/pi/image_analysis
+python3 socket_server.py
+```
+
+Optional flags:
+
+- `--host 0.0.0.0`
+- `--port 5000`
+- `--camera-index 0`
+
+Request/response model:
+
+- The socket server expects one JSON object per line.
+- Each response is also one JSON object per line.
+- Malformed JSON or unsupported request shapes return an error response without
+  stopping the server.
+- One failed request does not stop the server.
+
+Connection verification request:
+
+```json
+{"action":"health"}
+```
+
+Connection verification response example:
+
+```json
+{
+  "status":"success",
+  "server":"raspberry-pi-image-analysis",
+  "session_active":false,
+  "supported_actions":["health","start_test","detect_colors"]
+}
+```
+
+Real start-test request:
+
+```json
+{
+  "action":"start_test",
+  "cameraIndex":0,
+  "streamEndpoint":"http://127.0.0.1:8081/api/live-frame"
+}
+```
+
+Real start-test response behavior:
+
+- The response is delayed until the timed session completes.
+- While the session is running, live annotated frames are POSTed to
+  `streamEndpoint` if it is provided.
+- When the session finishes, the response includes the final session result and
+  any persisted analysis payload returned by the existing workflow.
+
+Busy-session response example:
+
+```json
+{"status":"busy","message":"A timed session is already active"}
+```
+
+Legacy one-shot detect-colors request:
+
+```json
+{"wells":["test"]}
+```
+
+That request still captures one frame and returns a short color response for
+compatibility, but it does not start the timed session or activate heating/IR
+services.
 
 For Raspberry Pi cameras that use a 4:3 sensor, keep `frame_width` and
 `frame_height` in `config.py` at a 4:3 ratio such as `4056x3040` or

@@ -41,6 +41,7 @@
       display: flex;
       justify-content: flex-end;
       align-items: center;
+      gap: 12px;
     }
 
     button {
@@ -95,6 +96,23 @@
       text-transform: lowercase;
     }
 
+    .results {
+      margin-top: 16px;
+      padding: 16px;
+      border-radius: 16px;
+      background: #f2f6ee;
+      border: 1px solid var(--border);
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .results[hidden] {
+      display: none;
+    }
+
     .video-shell {
       width: 100%;
       aspect-ratio: 4 / 3;
@@ -125,6 +143,7 @@
 <body>
   <div class="page">
     <div class="toolbar">
+      <button id="check-button" type="button">Check Pi Connection</button>
       <button id="start-button">Start Test Session</button>
     </div>
 
@@ -140,16 +159,33 @@
             Start a test session to view the live annotated stream here.
           </div>
         </div>
+        <pre id="results" class="results" hidden></pre>
       </section>
     </div>
   </div>
 
   <script>
+    const checkButton = document.getElementById("check-button");
     const startButton = document.getElementById("start-button");
     const statusText = document.getElementById("status");
     const lastFrameText = document.getElementById("last-frame");
     const videoFrame = document.getElementById("video-frame");
     const placeholder = document.getElementById("placeholder");
+    const resultsBox = document.getElementById("results");
+
+    async function checkConnection() {
+      checkButton.disabled = true;
+      try {
+        const response = await fetch("/api/check-connection", { method: "POST" });
+        const payload = await response.json();
+        renderStatus(payload);
+      } catch (error) {
+        statusText.textContent = "error";
+        lastFrameText.textContent = error.message;
+      } finally {
+        checkButton.disabled = false;
+      }
+    }
 
     async function startSession() {
       startButton.disabled = true;
@@ -172,6 +208,7 @@
       const status = payload.status || "idle";
       statusText.textContent = status;
       startButton.disabled = payload.running === true;
+      checkButton.disabled = payload.running === true;
 
       if (payload.lastFrameAt) {
         lastFrameText.textContent = `Last frame: ${payload.lastFrameAt}`;
@@ -184,8 +221,18 @@
         lastFrameText.textContent = "Session completed";
       } else if (status === "error") {
         lastFrameText.textContent = payload.lastError || "Session failed";
+      } else if (payload.connectionStatus === "connected") {
+        lastFrameText.textContent = `Pi reachable. Last checked: ${payload.connectionCheckedAt || "just now"}`;
       } else {
         lastFrameText.textContent = "Waiting for stream";
+      }
+
+      if (payload.finalResult) {
+        resultsBox.hidden = false;
+        resultsBox.textContent = JSON.stringify(payload.finalResult, null, 2);
+      } else {
+        resultsBox.hidden = true;
+        resultsBox.textContent = "";
       }
     }
 
@@ -200,6 +247,7 @@
       }
     }
 
+    checkButton.addEventListener("click", checkConnection);
     startButton.addEventListener("click", startSession);
     refreshStatus();
     window.setInterval(refreshStatus, 1000);

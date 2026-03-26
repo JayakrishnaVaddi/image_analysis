@@ -1,5 +1,5 @@
 """
-Small test web app for exercising the live session flow end to end.
+Small test web app for exercising the Pi socket-server session flow end to end.
 """
 
 from __future__ import annotations
@@ -7,22 +7,21 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
-import subprocess
-import sys
+import socket
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 
 LOGGER = logging.getLogger(__name__)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 INDEX_HTML_PATH = Path(__file__).resolve().parent / "static" / "index.html"
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 5.0
+DEFAULT_SESSION_TIMEOUT_SECONDS = 60.0 * 15.0
 
 
 def _utc_now() -> str:
@@ -41,20 +40,26 @@ class HarnessState:
     last_frame_at: Optional[str] = None
     last_error: Optional[str] = None
     latest_frame: Optional[bytes] = None
-    process: Optional[subprocess.Popen[str]] = None
-    logs: list[str] = field(default_factory=list)
+    final_result: Optional[dict[str, Any]] = None
+    connection_status: str = "unknown"
+    connection_checked_at: Optional[str] = None
+    connection_details: Optional[dict[str, Any]] = None
+    active_request: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def snapshot(self) -> dict[str, Optional[str] | bool]:
+    def snapshot(self) -> dict[str, Any]:
         with self.lock:
-            running = self.process is not None and self.process.poll() is None
             return {
                 "status": self.status,
-                "running": running,
+                "running": self.active_request,
                 "startedAt": self.started_at,
                 "completedAt": self.completed_at,
                 "lastFrameAt": self.last_frame_at,
                 "lastError": self.last_error,
+                "finalResult": self.final_result,
+                "connectionStatus": self.connection_status,
+                "connectionCheckedAt": self.connection_checked_at,
+                "connectionDetails": self.connection_details,
             }
 
 
@@ -66,6 +71,8 @@ class TestHarnessHandler(BaseHTTPRequestHandler):
     state: HarnessState
     camera_index: int
     stream_endpoint: str
+    pi_host: str
+    pi_port: int
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -83,6 +90,9 @@ class TestHarnessHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if parsed.path == "/api/check-connection":
+            self._check_connection()
+            return
         if parsed.path == "/api/start-session":
             self._start_session()
             return
@@ -118,10 +128,35 @@ class TestHarnessHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _check_connection(self) -> None:
+        try:
+            response = _send_pi_request(
+                host=self.pi_host,
+                port=self.pi_port,
+                payload={"action": "health"},
+                timeout_seconds=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            with self.state.lock:
+                self.state.connection_status = "error"
+                self.state.connection_checked_at = _utc_now()
+                self.state.connection_details = None
+                self.state.last_error = f"Unable to reach Pi server: {exc}"
+            self._send_json(self.state.snapshot(), status=HTTPStatus.BAD_GATEWAY)
+            return
+
+        with self.state.lock:
+            self.state.connection_status = "connected"
+            self.state.connection_checked_at = _utc_now()
+            self.state.connection_details = response
+            if self.state.status == "idle":
+                self.state.last_error = None
+
+        self._send_json(self.state.snapshot())
+
     def _start_session(self) -> None:
         with self.state.lock:
-            process = self.state.process
-            if process is not None and process.poll() is None:
+            if self.state.active_request:
                 self._send_json(
                     {
                         "status": self.state.status,
@@ -132,39 +167,27 @@ class TestHarnessHandler(BaseHTTPRequestHandler):
                 return
 
             self.state.status = "running"
+            self.state.active_request = True
             self.state.started_at = _utc_now()
             self.state.completed_at = None
             self.state.last_frame_at = None
             self.state.last_error = None
             self.state.latest_frame = None
-
-            command = [
-                sys.executable,
-                str(PROJECT_ROOT / "main.py"),
-                "--mode",
-                "live",
-                "--camera-index",
-                str(self.camera_index),
-            ]
-            env = os.environ.copy()
-            env["VIDEO_STREAM_ENDPOINT"] = self.stream_endpoint
-            env["PYTHONUNBUFFERED"] = "1"
-
-            LOGGER.info("Starting test session with command: %s", " ".join(command))
-            process = subprocess.Popen(
-                command,
-                cwd=str(PROJECT_ROOT),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            self.state.process = process
+            self.state.final_result = None
 
         threading.Thread(
-            target=_watch_process,
-            args=(self.state, process),
-            name="test-web-app-process-watch",
+            target=_run_remote_session,
+            args=(
+                self.state,
+                self.pi_host,
+                self.pi_port,
+                {
+                    "action": "start_test",
+                    "cameraIndex": self.camera_index,
+                    "streamEndpoint": self.stream_endpoint,
+                },
+            ),
+            name="test-web-app-session-watch",
             daemon=True,
         ).start()
         self._send_json(self.state.snapshot(), status=HTTPStatus.ACCEPTED)
@@ -192,36 +215,84 @@ class TestHarnessHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def _watch_process(state: HarnessState, process: subprocess.Popen[str]) -> None:
+def _send_pi_request(
+    host: str,
+    port: int,
+    payload: dict[str, Any],
+    timeout_seconds: float,
+) -> dict[str, Any]:
     """
-    Watch the session subprocess and update harness state when it exits.
+    Send one newline-delimited JSON request to the Pi server and decode the reply.
     """
 
-    output_lines: list[str] = []
-    if process.stdout is not None:
-        for line in process.stdout:
-            clean_line = line.rstrip()
-            output_lines.append(clean_line)
-            LOGGER.info("[session] %s", clean_line)
+    encoded = (json.dumps(payload) + "\n").encode("utf-8")
+    with socket.create_connection((host, port), timeout=timeout_seconds) as sock:
+        sock.settimeout(timeout_seconds)
+        sock.sendall(encoded)
+        reader = sock.makefile("r", encoding="utf-8", newline="\n")
+        line = reader.readline()
 
-    return_code = process.wait()
-    with state.lock:
-        state.logs = output_lines[-100:]
-        state.process = None
-        state.completed_at = _utc_now()
-        if return_code == 0:
-            state.status = "completed"
-            state.last_error = None
-        else:
+    if not line:
+        raise RuntimeError("Pi server closed the connection without sending a response")
+
+    response = json.loads(line)
+    if not isinstance(response, dict):
+        raise RuntimeError("Pi server returned a non-object response")
+    return response
+
+
+def _run_remote_session(
+    state: HarnessState,
+    pi_host: str,
+    pi_port: int,
+    request_payload: dict[str, Any],
+) -> None:
+    """
+    Start one remote timed session on the Pi server and store the final response.
+    """
+
+    try:
+        response = _send_pi_request(
+            host=pi_host,
+            port=pi_port,
+            payload=request_payload,
+            timeout_seconds=DEFAULT_SESSION_TIMEOUT_SECONDS,
+        )
+        with state.lock:
+            state.completed_at = _utc_now()
+            state.final_result = response
+            if response.get("status") == "success":
+                state.status = "completed"
+                state.last_error = None
+            elif response.get("status") == "busy":
+                state.status = "busy"
+                state.last_error = response.get("message", "Pi session already active")
+            else:
+                state.status = "error"
+                state.last_error = response.get("message", "Pi session failed")
+    except Exception as exc:
+        with state.lock:
+            state.completed_at = _utc_now()
             state.status = "error"
-            state.last_error = f"Session process exited with code {return_code}"
+            state.last_error = f"Unable to complete remote session: {exc}"
+            state.final_result = None
+    finally:
+        with state.lock:
+            state.active_request = False
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the image_analysis test web app")
     parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind")
     parser.add_argument("--port", type=int, default=8081, help="Port to bind")
-    parser.add_argument("--camera-index", type=int, default=0, help="Camera index for live sessions")
+    parser.add_argument("--camera-index", type=int, default=0, help="Camera index for remote live sessions")
+    parser.add_argument("--pi-host", default="127.0.0.1", help="Raspberry Pi socket server host")
+    parser.add_argument("--pi-port", type=int, default=5000, help="Raspberry Pi socket server port")
+    parser.add_argument(
+        "--public-host",
+        default="127.0.0.1",
+        help="Host name or IP address that the Pi should use to POST live frames back to this web app",
+    )
     return parser
 
 
@@ -232,7 +303,14 @@ def configure_logging() -> None:
     )
 
 
-def run_server(host: str, port: int, camera_index: int) -> int:
+def run_server(
+    host: str,
+    port: int,
+    camera_index: int,
+    pi_host: str,
+    pi_port: int,
+    public_host: str,
+) -> int:
     state = HarnessState()
     handler_class = type(
         "ConfiguredTestHarnessHandler",
@@ -240,12 +318,15 @@ def run_server(host: str, port: int, camera_index: int) -> int:
         {
             "state": state,
             "camera_index": camera_index,
-            "stream_endpoint": f"http://127.0.0.1:{port}/api/live-frame",
+            "pi_host": pi_host,
+            "pi_port": pi_port,
+            "stream_endpoint": f"http://{public_host}:{port}/api/live-frame",
         },
     )
 
     server = ThreadingHTTPServer((host, port), handler_class)
     LOGGER.info("Test web app listening on http://%s:%s", host, port)
+    LOGGER.info("Configured Pi socket server target: %s:%s", pi_host, pi_port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -258,7 +339,14 @@ def run_server(host: str, port: int, camera_index: int) -> int:
 def main() -> int:
     configure_logging()
     args = build_argument_parser().parse_args()
-    return run_server(host=args.host, port=args.port, camera_index=args.camera_index)
+    return run_server(
+        host=args.host,
+        port=args.port,
+        camera_index=args.camera_index,
+        pi_host=args.pi_host,
+        pi_port=args.pi_port,
+        public_host=args.public_host,
+    )
 
 
 if __name__ == "__main__":

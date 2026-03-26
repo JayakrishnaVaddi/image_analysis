@@ -37,6 +37,7 @@ class SessionOrchestrator:
         camera_index: int,
         display: bool,
         persist_result: PersistResultCallback,
+        stream_endpoint: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run one full timed session from trigger to cleanup.
@@ -67,6 +68,7 @@ class SessionOrchestrator:
         stream_service = LiveAnnotatedStreamService(
             camera_index=camera_index,
             on_analysis_success=_store_snapshot,
+            stream_endpoint=stream_endpoint,
         )
 
         LOGGER.info("Session start")
@@ -122,6 +124,14 @@ class SessionOrchestrator:
             LOGGER.info("Session end")
             with self._lock:
                 self._session_active = False
+
+    def is_session_active(self) -> bool:
+        """
+        Return whether a timed session is currently active.
+        """
+
+        with self._lock:
+            return self._session_active
 
 
 def _resolve_session_duration_seconds(default: int = 720) -> int:

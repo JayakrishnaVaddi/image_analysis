@@ -83,9 +83,11 @@ class LiveAnnotatedStreamService:
         self,
         camera_index: int = 0,
         on_analysis_success: Optional[Callable[[LiveAnalysisSnapshot], None]] = None,
+        stream_endpoint: Optional[str] = None,
     ) -> None:
         self._camera_index = camera_index
         self._on_analysis_success = on_analysis_success
+        self._stream_endpoint = stream_endpoint.strip() if stream_endpoint else None
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._error: Optional[BaseException] = None
@@ -133,7 +135,9 @@ class LiveAnnotatedStreamService:
         """
 
         load_local_env()
-        endpoint = os.getenv(VIDEO_STREAM.endpoint_env_var, "").strip()
+        endpoint = self._stream_endpoint
+        if endpoint is None:
+            endpoint = os.getenv(VIDEO_STREAM.endpoint_env_var, "").strip()
         target_fps = max(1, _resolve_int_env("STREAM_FPS", VIDEO_STREAM.target_fps))
         sender: Optional[HttpFrameStreamSender] = None
 
