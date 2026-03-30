@@ -81,13 +81,32 @@
     }
 
     .meta {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
       gap: 16px;
       margin-bottom: 16px;
       color: var(--muted);
       font-size: 14px;
+    }
+
+    .metric {
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: #f2f6ee;
+      border: 1px solid var(--border);
+    }
+
+    .metric-label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .metric-value {
+      color: var(--ink);
+      font-weight: 700;
     }
 
     .status {
@@ -145,13 +164,44 @@
     <div class="toolbar">
       <button id="check-button" type="button">Check Pi Connection</button>
       <button id="start-button">Start Test Session</button>
+      <button id="abort-button" type="button">Abort Test Session</button>
     </div>
 
     <div class="stage">
       <section class="panel">
         <div class="meta">
-          <div>Status: <span id="status" class="status">idle</span></div>
-          <div id="last-frame">Waiting for stream</div>
+          <div class="metric">
+            <span class="metric-label">Status</span>
+            <span id="status" class="metric-value status">idle</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Last Frame</span>
+            <span id="last-frame" class="metric-value">Waiting for stream</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">IR Temperature</span>
+            <span id="temperature" class="metric-value">--</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Time Remaining</span>
+            <span id="remaining" class="metric-value">--</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Session State</span>
+            <span id="session-state" class="metric-value">idle</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Session ID</span>
+            <span id="session-id" class="metric-value">--</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Stream Transport</span>
+            <span id="stream-transport" class="metric-value">websocket</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">WebSocket Status</span>
+            <span id="websocket-status" class="metric-value">idle</span>
+          </div>
         </div>
         <div class="video-shell">
           <img id="video-frame" alt="Annotated live stream" hidden>
@@ -167,8 +217,15 @@
   <script>
     const checkButton = document.getElementById("check-button");
     const startButton = document.getElementById("start-button");
+    const abortButton = document.getElementById("abort-button");
     const statusText = document.getElementById("status");
     const lastFrameText = document.getElementById("last-frame");
+    const temperatureText = document.getElementById("temperature");
+    const remainingText = document.getElementById("remaining");
+    const sessionStateText = document.getElementById("session-state");
+    const sessionIdText = document.getElementById("session-id");
+    const streamTransportText = document.getElementById("stream-transport");
+    const websocketStatusText = document.getElementById("websocket-status");
     const videoFrame = document.getElementById("video-frame");
     const placeholder = document.getElementById("placeholder");
     const resultsBox = document.getElementById("results");
@@ -204,11 +261,35 @@
       }
     }
 
+    async function abortSession() {
+      abortButton.disabled = true;
+      try {
+        const response = await fetch("/api/abort-session", { method: "POST" });
+        const payload = await response.json();
+        if (!response.ok && response.status !== 202) {
+          throw new Error(payload.message || "Unable to abort test session");
+        }
+        renderStatus(payload);
+      } catch (error) {
+        statusText.textContent = "error";
+        lastFrameText.textContent = error.message;
+      } finally {
+        await refreshStatus();
+      }
+    }
+
     function renderStatus(payload) {
       const status = payload.status || "idle";
       statusText.textContent = status;
       startButton.disabled = payload.running === true;
       checkButton.disabled = payload.running === true;
+      abortButton.disabled = payload.running !== true;
+      sessionStateText.textContent = payload.sessionState || status;
+      sessionIdText.textContent = payload.sessionId || "--";
+      streamTransportText.textContent = payload.streamTransport || "websocket";
+      websocketStatusText.textContent = payload.websocketStatus || "idle";
+      temperatureText.textContent = formatTemperature(payload.latestIrTemperatureC);
+      remainingText.textContent = formatRemaining(payload.remainingSeconds);
 
       if (payload.lastFrameAt) {
         lastFrameText.textContent = `Last frame: ${payload.lastFrameAt}`;
@@ -219,6 +300,8 @@
         lastFrameText.textContent = "Session running. Waiting for annotated frames...";
       } else if (status === "completed") {
         lastFrameText.textContent = "Session completed";
+      } else if (status === "aborted" || status === "aborting") {
+        lastFrameText.textContent = payload.lastError || "Session abort in progress";
       } else if (status === "error") {
         lastFrameText.textContent = payload.lastError || "Session failed";
       } else if (payload.connectionStatus === "connected") {
@@ -230,10 +313,38 @@
       if (payload.finalResult) {
         resultsBox.hidden = false;
         resultsBox.textContent = JSON.stringify(payload.finalResult, null, 2);
+      } else if (Array.isArray(payload.finalResultBinary)) {
+        resultsBox.hidden = false;
+        resultsBox.textContent = JSON.stringify(
+          {
+            status: "success",
+            transport: payload.streamTransport || "websocket",
+            binaryData: payload.finalResultBinary,
+          },
+          null,
+          2,
+        );
       } else {
         resultsBox.hidden = true;
         resultsBox.textContent = "";
       }
+    }
+
+    function formatTemperature(value) {
+      if (typeof value !== "number") {
+        return "--";
+      }
+      return `${value.toFixed(1)} C`;
+    }
+
+    function formatRemaining(value) {
+      if (typeof value !== "number") {
+        return "--";
+      }
+      const totalSeconds = Math.max(0, Math.round(value));
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      return `${minutes}:${String(seconds).padStart(2, "0")}`;
     }
 
     async function refreshStatus() {
@@ -249,6 +360,7 @@
 
     checkButton.addEventListener("click", checkConnection);
     startButton.addEventListener("click", startSession);
+    abortButton.addEventListener("click", abortSession);
     refreshStatus();
     window.setInterval(refreshStatus, 1000);
   </script>

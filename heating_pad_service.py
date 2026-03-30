@@ -109,6 +109,23 @@ class HeatingPadService:
 
         return tuple(LED(pin) for pin in LED_GPIO_PINS)
 
+    @classmethod
+    def force_off_safely(cls) -> None:
+        """
+        Best-effort relay shutdown used during process-level server cleanup.
+        """
+
+        try:
+            subprocess.run(
+                [str(RELAY_CMD), "0", "write", "1", "off"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            LOGGER.info("Heating pad force-off completed")
+        except Exception as exc:  # pragma: no cover - hardware runtime path.
+            LOGGER.error("Heating pad force-off failed during shutdown cleanup: %s", exc)
+
     def _relay_write(self, channel: int, state: str) -> bool:
         """
         Write the requested state to the relay board.

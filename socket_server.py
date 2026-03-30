@@ -11,7 +11,9 @@ import socketserver
 from typing import Optional
 
 from command_handler import CommandHandler
+from heating_pad_service import HeatingPadService
 from main import configure_logging
+from session_orchestrator import SESSION_ORCHESTRATOR
 
 
 LOGGER = logging.getLogger(__name__)
@@ -93,7 +95,26 @@ def run_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, camera_index:
     with ThreadedTCPServer((host, port), JsonLineRequestHandler) as server:
         server.command_handler = command_handler
         LOGGER.info("Socket server listening on %s:%s", host, port)
-        server.serve_forever()
+        try:
+            server.serve_forever()
+        finally:
+            _perform_server_shutdown_cleanup()
+
+
+def _perform_server_shutdown_cleanup() -> None:
+    """
+    Best-effort hardware-safe cleanup for server process shutdown.
+    """
+
+    try:
+        SESSION_ORCHESTRATOR.shutdown_for_server_stop()
+    except Exception as exc:  # pragma: no cover - defensive runtime path.
+        LOGGER.exception("Server shutdown cleanup failed while stopping active session: %s", exc)
+
+    try:
+        HeatingPadService.force_off_safely()
+    except Exception as exc:  # pragma: no cover - defensive runtime path.
+        LOGGER.exception("Server shutdown cleanup failed while forcing heating pad off: %s", exc)
 
 
 def main() -> int:
@@ -108,9 +129,11 @@ def main() -> int:
         run_server(host=args.host, port=args.port, camera_index=args.camera_index)
     except KeyboardInterrupt:
         LOGGER.info("Socket server stopped by user")
+        _perform_server_shutdown_cleanup()
         return 0
     except Exception as exc:  # pragma: no cover - defensive runtime path.
         LOGGER.exception("Socket server failed: %s", exc)
+        _perform_server_shutdown_cleanup()
         return 1
 
     return 0

@@ -50,8 +50,12 @@ class CommandHandler:
             normalized_action = action.strip().lower()
             if normalized_action == "health":
                 return self._handle_health()
+            if normalized_action == "status":
+                return self._handle_status()
             if normalized_action == "start_test":
                 return self._handle_start_test(payload)
+            if normalized_action == "abort_test":
+                return self._handle_abort_test()
             if normalized_action == "detect_colors":
                 return self._handle_detect_colors(payload)
             raise ValueError(f"Unsupported action {action!r}")
@@ -70,7 +74,19 @@ class CommandHandler:
             "status": "success",
             "server": "raspberry-pi-image-analysis",
             "session_active": SESSION_ORCHESTRATOR.is_session_active(),
-            "supported_actions": ["health", "start_test", "detect_colors"],
+            "supported_actions": ["health", "status", "start_test", "abort_test", "detect_colors"],
+        }
+
+    def _handle_status(self) -> Dict[str, Any]:
+        """
+        Return live session status, remaining time, and latest IR temperature.
+        """
+
+        snapshot = SESSION_ORCHESTRATOR.status_snapshot()
+        return {
+            "status": "success",
+            "server": "raspberry-pi-image-analysis",
+            **snapshot,
         }
 
     def _handle_start_test(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -81,6 +97,7 @@ class CommandHandler:
         plate_id = self._optional_string(payload, "plateId")
         mongo_uri = self._optional_string(payload, "mongoUri")
         stream_endpoint = self._optional_string(payload, "streamEndpoint")
+        websocket_endpoint = self._optional_string(payload, "websocketEndpoint")
         camera_index = self._optional_int(payload, "cameraIndex", self._camera_index)
         display = self._optional_bool(payload, "display", False)
 
@@ -92,6 +109,7 @@ class CommandHandler:
             display=display,
             persist_result=persist_live_analysis_snapshot,
             stream_endpoint=stream_endpoint,
+            websocket_endpoint=websocket_endpoint,
         )
 
         if session_result.get("status") == "already_active":
@@ -99,11 +117,33 @@ class CommandHandler:
                 "status": "busy",
                 "message": "A timed session is already active",
             }
+        if session_result.get("status") == "aborted":
+            return {
+                "status": "aborted",
+                "message": session_result.get("message", "Timed session aborted"),
+                "session": session_result,
+            }
 
         return {
             "status": "success",
             "message": "Timed session completed",
             "session": session_result,
+        }
+
+    def _handle_abort_test(self) -> Dict[str, Any]:
+        """
+        Request early shutdown of the active timed session.
+        """
+
+        if not SESSION_ORCHESTRATOR.abort_session():
+            return {
+                "status": "idle",
+                "message": "No active timed session to abort",
+            }
+
+        return {
+            "status": "success",
+            "message": "Abort requested; timed session cleanup is in progress",
         }
 
     def _handle_detect_colors(self, payload: Dict[str, Any]) -> Dict[str, Any]:

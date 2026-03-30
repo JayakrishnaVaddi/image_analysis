@@ -15,7 +15,7 @@ import db_handler
 from config import HSV_THRESHOLDS, MONGO, PLATE_GEOMETRY
 from main import build_mongo_document, build_run_document, validate_binary_data
 from plate_analyzer import PlateAnalyzer
-from session_orchestrator import _resolve_session_duration_seconds
+from session_orchestrator import SessionOrchestrator, _resolve_session_duration_seconds
 
 
 class PlateAnalyzerTests(unittest.TestCase):
@@ -257,6 +257,28 @@ class CommandHandlerTests(unittest.TestCase):
         self.assertEqual(response["server"], "raspberry-pi-image-analysis")
         self.assertEqual(response["session_active"], False)
         self.assertIn("start_test", response["supported_actions"])
+        self.assertIn("status", response["supported_actions"])
+
+    def test_status_action_returns_live_session_metadata(self) -> None:
+        status_snapshot = {
+            "session_active": True,
+            "session_state": "running",
+            "remaining_seconds": 412,
+            "latest_ir_temperature_c": 101.5,
+            "abort_requested": False,
+        }
+
+        with patch("command_handler.SESSION_ORCHESTRATOR.status_snapshot", return_value=status_snapshot):
+            response = self.handler.handle_request({"action": "status"})
+
+        self.assertEqual(
+            response,
+            {
+                "status": "success",
+                "server": "raspberry-pi-image-analysis",
+                **status_snapshot,
+            },
+        )
 
     def test_start_test_uses_existing_session_orchestration(self) -> None:
         orchestrator_response = {
@@ -302,6 +324,134 @@ class CommandHandlerTests(unittest.TestCase):
                 "message": "A timed session is already active",
             },
         )
+
+    def test_abort_test_reports_idle_when_no_session_is_running(self) -> None:
+        with patch("command_handler.SESSION_ORCHESTRATOR.abort_session", return_value=False):
+            response = self.handler.handle_request({"action": "abort_test"})
+
+        self.assertEqual(
+            response,
+            {
+                "status": "idle",
+                "message": "No active timed session to abort",
+            },
+        )
+
+    def test_abort_test_requests_session_shutdown(self) -> None:
+        with patch("command_handler.SESSION_ORCHESTRATOR.abort_session", return_value=True):
+            response = self.handler.handle_request({"action": "abort_test"})
+
+        self.assertEqual(
+            response,
+            {
+                "status": "success",
+                "message": "Abort requested; timed session cleanup is in progress",
+            },
+        )
+
+
+class SessionAbortTests(unittest.TestCase):
+    def test_abort_session_uses_existing_cleanup_path_and_turns_services_off(self) -> None:
+        orchestrator = SessionOrchestrator()
+        events = []
+
+        class FakeIRSensorService:
+            def start(self) -> None:
+                events.append("ir-start")
+
+            def stop(self) -> None:
+                events.append("ir-stop")
+
+        class FakeHeatingPadService:
+            def __init__(self, ir_sensor) -> None:
+                self.ir_sensor = ir_sensor
+
+            def start(self) -> None:
+                events.append("heater-start")
+
+            def stop(self) -> None:
+                events.append("heater-stop")
+
+        class FakeStreamService:
+            def __init__(self, camera_index, on_analysis_success, stream_endpoint=None) -> None:
+                self.on_analysis_success = on_analysis_success
+
+            def start(self) -> None:
+                events.append("stream-start")
+                orchestrator.abort_session()
+
+            def stop(self) -> None:
+                events.append("stream-stop")
+
+            def error(self):
+                return None
+
+        with patch("session_orchestrator.load_local_env", return_value=None), patch(
+            "session_orchestrator._resolve_session_duration_seconds",
+            return_value=720,
+        ), patch("session_orchestrator.IRSensorService", FakeIRSensorService), patch(
+            "session_orchestrator.HeatingPadService",
+            FakeHeatingPadService,
+        ), patch("session_orchestrator.LiveAnnotatedStreamService", FakeStreamService):
+            response = orchestrator.run_triggered_session(
+                plate_id=None,
+                mongo_uri=None,
+                camera_index=0,
+                display=False,
+                persist_result=lambda **kwargs: {"payload": "unused"},
+            )
+
+        self.assertEqual(response["status"], "aborted")
+        self.assertIn("heater-stop", events)
+        self.assertIn("ir-stop", events)
+        self.assertIn("stream-stop", events)
+        self.assertFalse(orchestrator.is_session_active())
+
+    def test_status_snapshot_reports_idle_cleanly_when_no_session_is_running(self) -> None:
+        orchestrator = SessionOrchestrator()
+
+        self.assertEqual(
+            orchestrator.status_snapshot(),
+            {
+                "session_active": False,
+                "session_state": "idle",
+                "remaining_seconds": None,
+                "latest_ir_temperature_c": None,
+                "abort_requested": False,
+            },
+        )
+
+    def test_status_snapshot_reports_remaining_time_and_ir_temperature(self) -> None:
+        orchestrator = SessionOrchestrator()
+
+        class FakeIRSensor:
+            def latest_temperature_c(self) -> float:
+                return 103.2
+
+        with patch("session_orchestrator.time.monotonic", return_value=100.2):
+            orchestrator._session_active = True
+            orchestrator._session_state = "running"
+            orchestrator._session_deadline_monotonic = 140.6
+            orchestrator._active_ir_sensor = FakeIRSensor()
+            snapshot = orchestrator.status_snapshot()
+
+        self.assertEqual(snapshot["session_active"], True)
+        self.assertEqual(snapshot["session_state"], "running")
+        self.assertEqual(snapshot["remaining_seconds"], 40)
+        self.assertEqual(snapshot["latest_ir_temperature_c"], 103.2)
+
+
+class ServerShutdownCleanupTests(unittest.TestCase):
+    def test_server_shutdown_cleanup_stops_active_session_and_forces_heater_off(self) -> None:
+        from socket_server import _perform_server_shutdown_cleanup
+
+        with patch("socket_server.SESSION_ORCHESTRATOR.shutdown_for_server_stop", return_value={}), patch(
+            "socket_server.HeatingPadService.force_off_safely",
+            return_value=None,
+        ) as force_off:
+            _perform_server_shutdown_cleanup()
+
+        force_off.assert_called_once_with()
 
 
 if __name__ == "__main__":

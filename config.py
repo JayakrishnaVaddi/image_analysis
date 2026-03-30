@@ -146,10 +146,12 @@ class VideoStreamConfig:
     """
 
     endpoint_env_var: str = "VIDEO_STREAM_ENDPOINT"
+    websocket_endpoint_env_var: str = "VIDEO_STREAM_WS_ENDPOINT"
     target_fps: int = 4
     jpeg_quality: int = 85
     reconnect_delay_seconds: float = 2.0
     send_timeout_seconds: float = 5.0
+    websocket_open_timeout_seconds: float = 5.0
     queue_size: int = 2
 
 
