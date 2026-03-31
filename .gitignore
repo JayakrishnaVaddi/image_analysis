@@ -11,3 +11,4 @@ env/
 Thumbs.db
 .vscode/
 *.log
+.codex
