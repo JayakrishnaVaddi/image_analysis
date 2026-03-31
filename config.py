@@ -45,6 +45,22 @@ class PreprocessCropConfig:
 
 
 @dataclass(frozen=True)
+class StreamCropConfig:
+    """
+    Crop applied only to the outgoing live WebSocket stream.
+
+    This is intentionally separate from PREPROCESS_CROP so stream framing can be
+    tuned without affecting the analysis pipeline.
+    """
+
+    enabled: bool = True
+    left_ratio: float = 0.225
+    top_ratio: float = 0.01
+    right_ratio: float = 0.68
+    bottom_ratio: float = 0.885
+
+
+@dataclass(frozen=True)
 class PlateGeometry:
     """
     Geometry configuration for the known vertical slab layout.
@@ -109,8 +125,10 @@ class CameraConfig:
     rpicam_timeout_ms: int = 1500
     rpicam_command_candidates: Tuple[str, ...] = ("rpicam-still", "libcamera-still")
     rpicam_extra_args: Tuple[str, ...] = ("--nopreview",)
-    stream_width: int = 1280
-    stream_height: int = 960
+    stream_source_width: int = 2028
+    stream_source_height: int = 1520
+    stream_width: int = 960
+    stream_height: int = 1280
     stream_framerate: int = 12
     rpicam_video_command_candidates: Tuple[str, ...] = ("rpicam-vid", "libcamera-vid")
 
@@ -146,6 +164,7 @@ CAMERA = CameraConfig()
 MONGO = MongoConfig()
 RUN_TIMING = RunTimingConfig()
 PREPROCESS_CROP = PreprocessCropConfig()
+STREAM_CROP = StreamCropConfig()
 MANUAL_CROP = ManualCropConfig()
 
 # HSV ranges are deliberately grouped in a simple list format so they can be

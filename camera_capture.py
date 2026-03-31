@@ -14,7 +14,7 @@ from typing import Generator, Optional
 import cv2
 import numpy as np
 
-from config import CAMERA
+from config import CAMERA, STREAM_CROP
 
 
 LOGGER = logging.getLogger(__name__)
@@ -170,9 +170,9 @@ def iter_live_frames(camera_index: int = 0) -> Generator[bytes, None, None]:
         "--timeout",
         "0",
         "--width",
-        str(CAMERA.stream_width),
+        str(CAMERA.stream_source_width),
         "--height",
-        str(CAMERA.stream_height),
+        str(CAMERA.stream_source_height),
         "--framerate",
         str(CAMERA.stream_framerate),
         "--camera",
@@ -210,7 +210,7 @@ def iter_live_frames(camera_index: int = 0) -> Generator[bytes, None, None]:
 
                 frame = bytes(buffer[start:end + 2])
                 del buffer[:end + 2]
-                yield frame
+                yield _transform_stream_frame(frame)
     finally:
         process.terminate()
         process.wait(timeout=2)
@@ -226,6 +226,70 @@ def _resolve_rpicam_video_command() -> Optional[str]:
         if resolved:
             return resolved
     return None
+
+
+def _transform_stream_frame(frame_bytes: bytes) -> bytes:
+    """
+    Apply stream-only framing adjustments before sending a JPEG frame.
+    """
+
+    if not STREAM_CROP.enabled:
+        return frame_bytes
+
+    decoded = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if decoded is None or decoded.size == 0:
+        LOGGER.warning("Failed to decode live stream frame for crop; sending original frame")
+        return frame_bytes
+
+    transformed = _crop_stream_frame(decoded)
+    transformed = _resize_stream_frame(transformed)
+    success, encoded = cv2.imencode(".jpg", transformed)
+    if not success:
+        LOGGER.warning("Failed to re-encode cropped live stream frame; sending original frame")
+        return frame_bytes
+
+    return encoded.tobytes()
+
+
+def _crop_stream_frame(frame: np.ndarray) -> np.ndarray:
+    """
+    Crop the outgoing live stream to a tighter portrait-style region.
+    """
+
+    height, width = frame.shape[:2]
+    left = max(0, min(width - 1, int(round(width * STREAM_CROP.left_ratio))))
+    top = max(0, min(height - 1, int(round(height * STREAM_CROP.top_ratio))))
+    right = max(left + 1, min(width, int(round(width * STREAM_CROP.right_ratio))))
+    bottom = max(top + 1, min(height, int(round(height * STREAM_CROP.bottom_ratio))))
+    return frame[top:bottom, left:right].copy()
+
+
+def _resize_stream_frame(frame: np.ndarray) -> np.ndarray:
+    """
+    Resize the cropped frame to fit the final stream output box.
+
+    Aspect ratio is preserved so the stream uses full-frame-then-crop logic
+    without introducing distortion.
+    """
+
+    height, width = frame.shape[:2]
+    if height <= 0 or width <= 0:
+        return frame
+
+    width_scale = CAMERA.stream_width / width
+    height_scale = CAMERA.stream_height / height
+    scale = min(width_scale, height_scale)
+
+    if scale <= 0:
+        return frame
+
+    target_width = max(1, int(round(width * scale)))
+    target_height = max(1, int(round(height * scale)))
+
+    if target_width == width and target_height == height:
+        return frame
+
+    return cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_AREA)
 
 
 def load_image(image_path: str) -> np.ndarray:
