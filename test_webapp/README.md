@@ -35,6 +35,7 @@ When the browser sends a start request, the server also:
 - sends live temperature updates over the same WebSocket connection
 - runs the session for 60 seconds
 - turns the heating pad off on timeout, manual stop, disconnect, or failure
+- launches `main.py --mode live` after a normal timed session completes
 
 The browser renders those JPEG frames continuously to behave like a live stream.
 

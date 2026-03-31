@@ -58,7 +58,7 @@ class PlateGeometry:
     visualization_radius_ratio: float = 0.42
     # The warped slab includes non-well label gutters on the top and right.
     # These ratios define the usable well grid area inside the warped slab.
-    active_left_ratio: float = 0.06
+    active_left_ratio: float = 0.05
     active_top_ratio: float = 0.01
     active_right_ratio: float = 0.90
     active_bottom_ratio: float = 0.965

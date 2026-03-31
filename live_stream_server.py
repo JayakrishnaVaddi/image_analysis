@@ -13,7 +13,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from camera_capture import CameraCaptureError, iter_live_frames
@@ -30,8 +32,10 @@ except ImportError as exc:  # pragma: no cover - depends on local environment.
 
 
 LOGGER = logging.getLogger(__name__)
+REPO_ROOT = Path(__file__).resolve().parent
+MAIN_SCRIPT_PATH = REPO_ROOT / "main.py"
 STREAM_PATH = "/stream"
-SESSION_DURATION_SECONDS = 150
+SESSION_DURATION_SECONDS = 60
 TEMPERATURE_INTERVAL_SECONDS = 1.0
 
 
@@ -121,6 +125,7 @@ class SessionCoordinator:
                 await asyncio.wait_for(session.stop_event.wait(), timeout=SESSION_DURATION_SECONDS)
             except asyncio.TimeoutError:
                 session.end_reason = "timeout"
+                session.stop_event.set()
         except Exception as exc:
             session.end_reason = "error"
             session.error_message = str(exc)
@@ -165,6 +170,11 @@ class SessionCoordinator:
             with contextlib.suppress(Exception):
                 await session.websocket.close()
 
+            if session.end_reason == "timeout":
+                LOGGER.info("Timed session ended; cleanup completed. Starting analysis handoff.")
+                await self._launch_analysis_subprocess(session.camera_index)
+            else:
+                LOGGER.info("Session ended with reason=%s; skipping analysis handoff.", session.end_reason)
             async with self._lock:
                 if self._active_session is session:
                     self._active_session = None
@@ -214,6 +224,32 @@ class SessionCoordinator:
         with contextlib.suppress(ConnectionClosed, Exception):
             await websocket.send(json.dumps(payload))
 
+    async def _launch_analysis_subprocess(self, camera_index: int) -> None:
+        command = [
+            sys.executable,
+            str(MAIN_SCRIPT_PATH),
+            "--mode",
+            "live",
+            "--camera-index",
+            str(camera_index),
+        ]
+        LOGGER.info("Launching analysis command: %s", " ".join(command))
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=str(REPO_ROOT),
+            )
+        except Exception:
+            LOGGER.exception("Failed to launch main.py --mode live")
+            return
+
+        LOGGER.info("Started analysis subprocess with pid %s", process.pid)
+        return_code = await process.wait()
+        if return_code == 0:
+            LOGGER.info("Analysis subprocess completed successfully")
+        else:
+            LOGGER.error("Analysis subprocess exited with code %s", return_code)
 
 async def client_handler(websocket: ServerConnection, coordinator: SessionCoordinator) -> None:
     """
