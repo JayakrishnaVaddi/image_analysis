@@ -1,18 +1,52 @@
-const startButton = document.getElementById("startButton");
-const stopButton = document.getElementById("stopButton");
+const startDeviceButton =
+  document.getElementById("startDeviceButton") || document.getElementById("startButton");
+const runTestButton =
+  document.getElementById("runTestButton") || document.getElementById("runButton");
+const stopDeviceButton =
+  document.getElementById("stopDeviceButton") || document.getElementById("stopButton");
 const wsUrlInput = document.getElementById("wsUrl");
 const statusEl = document.getElementById("status");
 const sessionStateEl = document.getElementById("sessionState");
+const testStateEl = document.getElementById("testState");
 const temperatureValueEl = document.getElementById("temperatureValue");
 const imageEl = document.getElementById("streamImage");
 const placeholderEl = document.getElementById("placeholder");
 
 let socket = null;
 let currentObjectUrl = null;
-let isManualStop = false;
-let sessionEndedByServer = false;
-let closeStatusOverride = null;
-let closeSessionStateOverride = null;
+let pendingAction = null;
+let deviceActive = false;
+let testRunning = false;
+let heaterEnabled = false;
+let isConnecting = false;
+let isStopping = false;
+
+function hasRequiredUi() {
+  return Boolean(
+    startDeviceButton &&
+      runTestButton &&
+      stopDeviceButton &&
+      wsUrlInput &&
+      statusEl &&
+      sessionStateEl &&
+      testStateEl &&
+      temperatureValueEl &&
+      imageEl &&
+      placeholderEl,
+  );
+}
+
+function logClient(message, detail) {
+  if (detail === undefined) {
+    console.info(`[test_webapp] ${message}`);
+    return;
+  }
+  console.info(`[test_webapp] ${message}`, detail);
+}
+
+if (!hasRequiredUi()) {
+  console.error("[test_webapp] Required UI elements are missing. Reload the page to fetch the latest test_webapp files.");
+} else {
 
 function defaultWebSocketUrl() {
   const pageProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -40,8 +74,7 @@ function normalizeWebSocketUrl(rawValue) {
   }
 
   const inferred = new URL(`${window.location.protocol}//${trimmed}`);
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  inferred.protocol = protocol;
+  inferred.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   if (!inferred.pathname || inferred.pathname === "/") {
     inferred.pathname = "/stream";
   }
@@ -55,6 +88,10 @@ function setStatus(message, state) {
 
 function setSessionState(message) {
   sessionStateEl.textContent = message;
+}
+
+function setTestState(message) {
+  testStateEl.textContent = message;
 }
 
 function setTemperatureValue(value) {
@@ -74,14 +111,24 @@ function clearStreamView() {
   placeholderEl.hidden = false;
 }
 
-function updateButtonState(isStreaming) {
-  startButton.disabled = isStreaming;
-  stopButton.disabled = !isStreaming;
+function updateButtonState() {
+  startDeviceButton.disabled = deviceActive || isConnecting || isStopping;
+  runTestButton.disabled = !deviceActive || testRunning || isConnecting || isStopping;
+  stopDeviceButton.disabled = !deviceActive || isConnecting || isStopping;
 }
 
-function rememberCloseState(statusMessage, statusState, sessionMessage) {
-  closeStatusOverride = { message: statusMessage, state: statusState };
-  closeSessionStateOverride = sessionMessage;
+function resetUiToIdle(statusMessage = "Idle", statusState = "pending") {
+  deviceActive = false;
+  testRunning = false;
+  heaterEnabled = false;
+  isConnecting = false;
+  isStopping = false;
+  clearStreamView();
+  setTemperatureValue("--.- C");
+  setSessionState("Idle");
+  setTestState("Idle");
+  setStatus(statusMessage, statusState);
+  updateButtonState();
 }
 
 function closeSocketIfNeeded() {
@@ -91,161 +138,269 @@ function closeSocketIfNeeded() {
   }
 }
 
-wsUrlInput.value = defaultWebSocketUrl();
-updateButtonState(false);
-setSessionState("Idle");
-setTemperatureValue("--.- C");
+function sendAction(action) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    setStatus("WebSocket is not connected.", "error");
+    return;
+  }
+  socket.send(JSON.stringify({ action }));
+}
 
-startButton.addEventListener("click", () => {
+function connectSocketIfNeeded(actionOnOpen) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    pendingAction = null;
+    logClient("Socket already open; reusing existing connection.");
+    return true;
+  }
+
+  if (socket && socket.readyState === WebSocket.CONNECTING) {
+    pendingAction = actionOnOpen;
+    isConnecting = true;
+    setStatus("Connecting...", "pending");
+    updateButtonState();
+    return false;
+  }
+
   let wsUrl;
   try {
     wsUrl = normalizeWebSocketUrl(wsUrlInput.value);
   } catch (_error) {
     setStatus("Enter a valid WebSocket server URL.", "error");
-    return;
+    return false;
   }
 
   wsUrlInput.value = wsUrl;
-  isManualStop = false;
-  sessionEndedByServer = false;
-  closeStatusOverride = null;
-  closeSessionStateOverride = null;
-
-  closeSocketIfNeeded();
-  clearStreamView();
-
-  setStatus("Connecting...", "pending");
-  setSessionState("Connecting");
-  setTemperatureValue("--.- C");
-  updateButtonState(true);
+  pendingAction = actionOnOpen;
+  isConnecting = true;
+  logClient("Opening WebSocket connection", wsUrl);
   socket = new WebSocket(wsUrl);
   socket.binaryType = "blob";
+  attachSocketListeners(socket);
+  setStatus("Connecting...", "pending");
+  setSessionState("Connecting");
+  updateButtonState();
+  return false;
+}
 
-  socket.addEventListener("open", () => {
-    socket.send(JSON.stringify({ action: "start_session" }));
-    setStatus("Starting coordinated session...", "pending");
-    setSessionState("Starting");
+function attachSocketListeners(activeSocket) {
+  activeSocket.addEventListener("open", () => {
+    isConnecting = false;
+    logClient("WebSocket connected.");
+    setStatus("Connected.", "ok");
+    updateButtonState();
+    if (pendingAction) {
+      const action = pendingAction;
+      pendingAction = null;
+      sendAction(action);
+    }
   });
 
-  socket.addEventListener("message", (event) => {
+  activeSocket.addEventListener("message", (event) => {
     if (typeof event.data === "string") {
-      let payload;
-      try {
-        payload = JSON.parse(event.data);
-      } catch (_error) {
-        return;
-      }
-
-      switch (payload.type) {
-        case "info":
-          return;
-        case "session_started":
-          setStatus(`Session running for ${payload.durationSeconds} seconds.`, "ok");
-          setSessionState("Running");
-          return;
-        case "temperature":
-          if (typeof payload.celsius === "number") {
-            setTemperatureValue(`${payload.celsius.toFixed(1)} C`);
-          } else {
-            setTemperatureValue("Sensor unavailable");
-          }
-          return;
-        case "heater_state":
-          if (payload.enabled) {
-            setSessionState("Running / Heater ON");
-          }
-          return;
-        case "session_busy":
-          setStatus(payload.message || "Another session is already active.", "error");
-          setSessionState("Busy");
-          updateButtonState(false);
-          rememberCloseState(payload.message || "Another session is already active.", "error", "Busy");
-          closeSocketIfNeeded();
-          return;
-        case "session_error":
-          setStatus(payload.message || "Session error.", "error");
-          setSessionState("Error");
-          rememberCloseState(payload.message || "Session error.", "error", "Error");
-          return;
-        case "session_ended":
-          sessionEndedByServer = true;
-          clearStreamView();
-          setTemperatureValue("--.- C");
-          setSessionState(`Ended: ${payload.reason}`);
-          setStatus(`Session ended: ${payload.reason}.`, "pending");
-          rememberCloseState(`Session ended: ${payload.reason}.`, "pending", `Ended: ${payload.reason}`);
-          return;
-        default:
-          return;
-      }
+      logClient("Received server message", event.data);
+      handleJsonMessage(event.data);
+      return;
     }
 
-    if (typeof event.data !== "string") {
-      cleanupImageUrl();
-      currentObjectUrl = URL.createObjectURL(event.data);
-      imageEl.src = currentObjectUrl;
-      placeholderEl.hidden = true;
-      setStatus("Streaming live JPEG frames over WebSocket.", "ok");
-      if (sessionStateEl.textContent === "Running") {
-        setSessionState("Running / Video Active");
-      }
-      return;
+    logClient("Received video frame.");
+    cleanupImageUrl();
+    currentObjectUrl = URL.createObjectURL(event.data);
+    imageEl.src = currentObjectUrl;
+    placeholderEl.hidden = false;
+    placeholderEl.hidden = true;
+    if (testRunning) {
+      setStatus("Video stream active.", "ok");
+      setTestState("Running");
     }
   });
 
-  socket.addEventListener("close", () => {
+  activeSocket.addEventListener("close", () => {
+    logClient("WebSocket closed.");
     socket = null;
-    clearStreamView();
-    setTemperatureValue("--.- C");
-    updateButtonState(false);
-    if (isManualStop) {
-      setSessionState("Stopped");
-      setStatus("Stream stopped.", "pending");
+    pendingAction = null;
+    isConnecting = false;
+    isStopping = false;
+    if (deviceActive) {
+      resetUiToIdle("Disconnected.", "error");
+      setSessionState("Disconnected");
+      setTestState("Stopped");
       return;
     }
-    if (closeStatusOverride) {
-      setSessionState(closeSessionStateOverride || "Stopped");
-      setStatus(closeStatusOverride.message, closeStatusOverride.state);
-      closeStatusOverride = null;
-      closeSessionStateOverride = null;
-      return;
-    }
-    if (sessionEndedByServer) {
-      return;
-    }
-    setSessionState("Disconnected");
-    setStatus("Disconnected.", "error");
+    resetUiToIdle("Idle", "pending");
   });
 
-  socket.addEventListener("error", () => {
-    setSessionState("Error");
-    updateButtonState(false);
-    setStatus("Stream connection failed.", "error");
+  activeSocket.addEventListener("error", () => {
+    logClient("WebSocket error.");
+    isConnecting = false;
+    isStopping = false;
+    setStatus("WebSocket connection failed.", "error");
+    updateButtonState();
   });
-});
+}
 
-stopButton.addEventListener("click", () => {
-  if (!socket) {
-    clearStreamView();
-    updateButtonState(false);
-    setStatus("Stream already stopped.", "pending");
+function handleJsonMessage(rawPayload) {
+  let payload;
+  try {
+    payload = JSON.parse(rawPayload);
+  } catch (_error) {
     return;
   }
 
-  isManualStop = true;
-  sessionEndedByServer = false;
-  setStatus("Stopping stream...", "pending");
-  setSessionState("Stopping");
-  try {
-    socket.send(JSON.stringify({ action: "stop_session" }));
-  } catch (_error) {
-    // A disconnect-triggered cleanup is still enough to stop the session.
+  switch (payload.type) {
+    case "info":
+      return;
+    case "device_started":
+      deviceActive = true;
+      testRunning = false;
+      isStopping = false;
+      setStatus(`Device ready. Temperature telemetry active. Target test temperature ${payload.targetCelsius} C.`, "ok");
+      setSessionState("Ready / Telemetry Active");
+      setTestState("Idle");
+      updateButtonState();
+      return;
+    case "device_already_active":
+      deviceActive = true;
+      isStopping = false;
+      setStatus(payload.message || "Device is already active.", "pending");
+      setSessionState("Ready / Telemetry Active");
+      setTestState(testRunning ? "Running" : "Idle");
+      updateButtonState();
+      return;
+    case "temperature":
+      if (typeof payload.celsius === "number") {
+        setTemperatureValue(`${payload.celsius.toFixed(1)} C`);
+      } else {
+        setTemperatureValue("Sensor unavailable");
+      }
+      return;
+    case "heater_state":
+      heaterEnabled = Boolean(payload.enabled);
+      if (deviceActive) {
+        if (testRunning) {
+          setSessionState(heaterEnabled ? "Testing / Heater ON" : "Testing / Heater Cycling");
+        } else {
+          setSessionState("Ready / Telemetry Active");
+        }
+      }
+      return;
+    case "target_reached":
+      setStatus(
+        `Target reached at ${payload.celsius.toFixed(1)} C. Holding near ${payload.targetCelsius} C.`,
+        "ok",
+      );
+      setSessionState("Testing / At Temperature");
+      return;
+    case "test_started":
+      testRunning = true;
+      isStopping = false;
+      clearStreamView();
+      setStatus(`Test running for ${payload.durationSeconds} seconds.`, "ok");
+      setTestState("Running");
+      updateButtonState();
+      return;
+    case "test_already_running":
+      testRunning = true;
+      isStopping = false;
+      setStatus(payload.message || "Test is already running.", "pending");
+      setTestState("Running");
+      updateButtonState();
+      return;
+    case "test_completed":
+      testRunning = false;
+      clearStreamView();
+      setStatus("Test completed. Analysis handoff started.", "ok");
+      setTestState("Completed");
+      if (deviceActive) {
+        setSessionState("Ready / Telemetry Active");
+      }
+      updateButtonState();
+      return;
+    case "test_stopped":
+      testRunning = false;
+      clearStreamView();
+      setStatus(`Test stopped: ${payload.reason}.`, "pending");
+      setTestState(`Stopped: ${payload.reason}`);
+      if (deviceActive) {
+        setSessionState("Ready / Telemetry Active");
+      }
+      updateButtonState();
+      return;
+    case "device_error":
+    case "session_error":
+      isStopping = false;
+      setStatus(payload.message || "Device error.", "error");
+      setSessionState("Error");
+      updateButtonState();
+      return;
+    case "session_busy":
+      isConnecting = false;
+      setStatus(payload.message || "Another device session is already active.", "error");
+      setSessionState("Busy");
+      updateButtonState();
+      return;
+    case "invalid_action":
+      isStopping = false;
+      setStatus(payload.message || "Action rejected.", "error");
+      updateButtonState();
+      return;
+    case "device_stopped":
+      resetUiToIdle(`Device stopped: ${payload.reason}.`, "pending");
+      setSessionState(`Stopped: ${payload.reason}`);
+      return;
+    default:
+      return;
   }
-  closeSocketIfNeeded();
+}
+
+wsUrlInput.value = defaultWebSocketUrl();
+resetUiToIdle();
+logClient("Test webapp initialized.");
+
+startDeviceButton.addEventListener("click", () => {
+  logClient("Start Device clicked.");
+  if (!connectSocketIfNeeded("start_device")) {
+    if (socket && socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+  }
+  sendAction("start_device");
+});
+
+runTestButton.addEventListener("click", () => {
+  logClient("Run Test clicked.");
+  if (!deviceActive) {
+    setStatus("Start Device before running a test.", "error");
+    return;
+  }
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    setStatus("Device connection is not active.", "error");
+    return;
+  }
+  sendAction("run_test");
+});
+
+stopDeviceButton.addEventListener("click", () => {
+  logClient("Stop Device clicked.");
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    resetUiToIdle("Device already stopped.", "pending");
+    return;
+  }
+  isStopping = true;
+  setStatus("Stopping device...", "pending");
+  setSessionState("Stopping");
+  updateButtonState();
+  sendAction("stop_device");
 });
 
 window.addEventListener("beforeunload", () => {
-  setTemperatureValue("--.- C");
   clearStreamView();
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    try {
+      socket.send(JSON.stringify({ action: "stop_device" }));
+    } catch (_error) {
+      // Best-effort cleanup only.
+    }
+  }
   closeSocketIfNeeded();
 });
+}

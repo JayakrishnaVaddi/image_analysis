@@ -46,8 +46,8 @@ def relay_write(channel: int, state: str) -> bool:
 
 
 # ---------------- TEMPERATURE THRESHOLDS ----------------
-TEMP_ON_C  = 100.0
-TEMP_OFF_C = 104.0
+TEMP_ON_C  = 103.0
+TEMP_OFF_C = 105.0
 
 
 # ---------------- MLX90614 SETUP ----------------

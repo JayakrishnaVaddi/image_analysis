@@ -1,6 +1,7 @@
 # Test WebSocket Video Stream
 
-This folder contains a separate browser test app whose only purpose is to verify the Raspberry Pi WebSocket live stream.
+This folder contains a separate browser test app whose only purpose is to verify
+the Raspberry Pi device-control and WebSocket live stream behavior.
 
 The stream server belongs to the main project codebase in:
 
@@ -28,14 +29,25 @@ It is not H.264/WebRTC or another browser-native encoded video pipeline.
 
 The server continuously reads JPEG frames from the Raspberry Pi camera using the existing project camera streaming helper, then pushes each JPEG frame to connected browsers as binary WebSocket messages.
 
-When the browser sends a start request, the server also:
+When the browser sends control requests, the server now runs in two phases:
 
-- turns the heating pad on
-- polls the MLX90614 non-contact IR sensor
-- sends live temperature updates over the same WebSocket connection
-- runs the session for 60 seconds
-- turns the heating pad off on timeout, manual stop, disconnect, or failure
-- launches `main.py --mode live` after a normal timed session completes
+- `Start Device`
+  - starts MLX90614 temperature telemetry immediately
+  - keeps the device in a ready state
+  - does not turn the heating pad on yet
+  - does not start video yet
+- `Run Test`
+  - turns the heating pad on
+  - starts live video
+  - runs the timed test window for `60` seconds
+  - keeps temperature telemetry active during the test
+  - applies heater control during the test
+  - launches `main.py --mode live` after a normal test completion
+- `Stop Device`
+  - turns the heater off
+  - stops temperature telemetry
+  - stops live video if running
+  - cleans up the device session safely
 
 The browser renders those JPEG frames continuously to behave like a live stream.
 
@@ -107,10 +119,12 @@ On the page:
 
 1. Enter the Raspberry Pi WebSocket URL if needed, for example `ws://<raspberry-pi-ip>:8765`
    or `ws://<raspberry-pi-ip>:8765/stream`
-2. Click `Start Stream`
-3. Confirm the live video and temperature readings appear
-4. Confirm the session stops automatically after 60 seconds
-5. Optionally click `Stop Stream` early and confirm the session shuts down cleanly
+2. Click `Start Device`
+3. Confirm temperature readings begin while the heater and video remain off
+4. Click `Run Test`
+5. Confirm the heater starts, the live video appears, and the test runs for 60 seconds
+6. Confirm the test completes and analysis handoff starts
+7. Click `Stop Device` to end the active device session and turn heating off
 
 ## Limitations
 
@@ -118,6 +132,7 @@ On the page:
 - Browser rendering swaps incoming JPEG blobs, which is practical for validation but less efficient than a dedicated video codec pipeline.
 - The camera should not be used by multiple processes at the same time.
 - This path is intended for manual validation, not as a production browser streaming stack.
+- Only one active device session is supported at a time.
 
 ## How Original Flow Was Preserved
 
