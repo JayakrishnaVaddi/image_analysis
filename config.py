@@ -38,10 +38,10 @@ class PreprocessCropConfig:
     """
 
     enabled: bool = True
-    left_ratio: float = 0.18
-    top_ratio: float = 0.03
-    right_ratio: float = 0.80
-    bottom_ratio: float = 0.93
+    left_ratio: float = 0.225
+    top_ratio: float = 0
+    right_ratio: float = 0.75
+    bottom_ratio: float = 0.90
 
 
 @dataclass(frozen=True)
@@ -94,11 +94,47 @@ class DetectionConfig:
     grayscale_value_min: int = 120
     close_kernel: GridSize = (31, 31)
     open_kernel: GridSize = (7, 7)
+    helper_close_kernel: GridSize = (91, 91)
+    helper_open_kernel: GridSize = (17, 17)
+    helper_dilate_kernel: GridSize = (15, 15)
     target_aspect_ratio: float = 1.5
     max_aspect_ratio_deviation: float = 0.9
     component_min_area_ratio: float = 0.03
     component_center_weight: float = 0.45
     component_area_weight: float = 0.55
+    helper_quad_expand_scale: float = 1.10
+    helper_quad_min_area_ratio: float = 0.42
+
+
+@dataclass(frozen=True)
+class WellDetectionConfig:
+    """
+    Tunables for per-well candidate detection and grid assignment.
+    """
+
+    adaptive_block_size: int = 41
+    adaptive_c: int = 8
+    saturation_threshold: int = 45
+    value_threshold: int = 70
+    contour_area_min_scale: float = 0.28
+    contour_area_max_scale: float = 1.85
+    min_circularity: float = 0.32
+    max_ellipse_axis_ratio: float = 2.2
+    duplicate_center_distance_scale: float = 0.85
+    duplicate_radius_delta_scale: float = 0.7
+    hough_dp: float = 1.2
+    hough_min_dist_scale: float = 1.5
+    hough_param1: int = 110
+    hough_param2: int = 12
+    hough_min_radius_scale: float = 0.55
+    hough_max_radius_scale: float = 1.15
+    row_cluster_count: int = 12
+    col_cluster_count: int = 8
+    min_detected_wells: int = 56
+    max_inferred_wells: int = 40
+    max_assignment_error_scale: float = 0.72
+    sample_radius_scale: float = 0.56
+    visualization_radius_scale: float = 0.88
 
 
 @dataclass(frozen=True)
@@ -159,6 +195,7 @@ class RunTimingConfig:
 
 PLATE_GEOMETRY = PlateGeometry()
 DETECTION = DetectionConfig()
+WELL_DETECTION = WellDetectionConfig()
 OUTPUT = OutputConfig()
 CAMERA = CameraConfig()
 MONGO = MongoConfig()
