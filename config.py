@@ -77,7 +77,7 @@ class PlateGeometry:
     active_left_ratio: float = 0.05
     active_top_ratio: float = 0.01
     active_right_ratio: float = 0.90
-    active_bottom_ratio: float = 0.965
+    active_bottom_ratio: float = 0.99
 
 
 @dataclass(frozen=True)
