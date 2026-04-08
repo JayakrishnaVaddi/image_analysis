@@ -40,7 +40,7 @@ class PreprocessCropConfig:
     enabled: bool = True
     left_ratio: float = 0.225
     top_ratio: float = 0
-    right_ratio: float = 0.75
+    right_ratio: float = 0.72
     bottom_ratio: float = 0.90
 
 
