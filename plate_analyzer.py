@@ -50,6 +50,7 @@ class AnalysisArtifacts:
     grid_overlay: np.ndarray
     annotated_result: np.ndarray
     clean_result: np.ndarray
+    ordered_result: np.ndarray
     candidate_wells: np.ndarray
     labeled_wells: np.ndarray
     sample_regions: np.ndarray
@@ -126,7 +127,7 @@ class PlateAnalyzer:
             image=image,
             accepted_overlay=accepted_overlay,
         )
-        gene_presence, well_colors, annotated, clean_result, sample_regions = self._classify_assigned_wells(
+        gene_presence, well_colors, annotated, clean_result, ordered_result, sample_regions = self._classify_assigned_wells(
             image=image,
             assigned_wells=assigned_wells,
         )
@@ -141,6 +142,7 @@ class PlateAnalyzer:
                 grid_overlay=accepted_overlay,
                 annotated_result=annotated,
                 clean_result=clean_result,
+                ordered_result=ordered_result,
                 candidate_wells=candidate_overlay,
                 labeled_wells=labeled_overlay,
                 sample_regions=sample_regions,
@@ -821,7 +823,7 @@ class PlateAnalyzer:
         self,
         image: np.ndarray,
         assigned_wells: List[WellDetail],
-    ) -> Tuple[List[int], List[Optional[str]], np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[List[int], List[Optional[str]], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Extract per-well sample regions and classify colors from detected centers.
         """
@@ -900,7 +902,52 @@ class PlateAnalyzer:
                 2,
             )
 
-        return well_values, well_colors, annotated, clean_result, sample_regions
+        ordered_result = self._render_ordered_result(
+            image_shape=image.shape,
+            assigned_wells=assigned_wells,
+            uniform_visualization_radius=uniform_visualization_radius,
+        )
+
+        return well_values, well_colors, annotated, clean_result, ordered_result, sample_regions
+
+    def _render_ordered_result(
+        self,
+        image_shape: Tuple[int, int, int],
+        assigned_wells: List[WellDetail],
+        uniform_visualization_radius: int,
+    ) -> np.ndarray:
+        """
+        Render one clean ordered grid of classified wells using output order.
+        """
+
+        ordered_result = np.full(image_shape, 245, dtype=np.uint8)
+        image_height, image_width = image_shape[:2]
+        cols = max(PLATE_GEOMETRY.cols, 1)
+        rows = max(PLATE_GEOMETRY.rows, 1)
+        margin_x = int(round(image_width * 0.09))
+        margin_y = int(round(image_height * 0.06))
+        usable_width = max(image_width - (2 * margin_x), cols)
+        usable_height = max(image_height - (2 * margin_y), rows)
+        cell_width = usable_width / cols
+        cell_height = usable_height / rows
+        circle_radius = min(
+            uniform_visualization_radius,
+            max(6, int(round(min(cell_width, cell_height) * 0.32))),
+        )
+        ordered_wells = sorted(assigned_wells, key=lambda well: well.well_number)
+
+        for index, well in enumerate(ordered_wells):
+            display_row = index // cols
+            display_col = (cols - 1) - (index % cols)
+            center_x = int(round(margin_x + ((display_col + 0.5) * cell_width)))
+            center_y = int(round(margin_y + ((display_row + 0.5) * cell_height)))
+            center = (center_x, center_y)
+            render_color = self._render_bgr_from_color(well.color)
+
+            cv2.circle(ordered_result, center, circle_radius, render_color, -1)
+            cv2.circle(ordered_result, center, circle_radius, (200, 200, 200), 2)
+
+        return ordered_result
 
     def _normalize_candidates(
         self,

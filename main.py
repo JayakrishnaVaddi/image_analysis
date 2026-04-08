@@ -273,6 +273,10 @@ def save_artifacts(
     save_image(clean_result_path, analysis_result.artifacts.clean_result)
     saved_files["clean_result_image"] = str(clean_result_path)
 
+    ordered_result_path = output_dir / "result.jpg"
+    save_image(ordered_result_path, analysis_result.artifacts.ordered_result)
+    saved_files["ordered_result_image"] = str(ordered_result_path)
+
     return saved_files
 
 

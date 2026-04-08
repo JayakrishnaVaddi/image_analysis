@@ -103,6 +103,7 @@ Each run writes files into its own folder inside `output/`, for example
 - Per-well sample region image
 - Annotated result image
 - Clean grid-only result image
+- Ordered result image
 - JSON results
 
 The stored and uploaded payload contains only:

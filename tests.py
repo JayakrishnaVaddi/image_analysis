@@ -90,7 +90,7 @@ class PlateAnalyzerTests(unittest.TestCase):
             image=yellow_bgr,
             accepted_overlay=yellow_bgr.copy(),
         )
-        gene_values, well_colors, _, _, clean_result = self.analyzer._classify_assigned_wells(
+        gene_values, well_colors, _, clean_result, ordered_result, _ = self.analyzer._classify_assigned_wells(
             image=yellow_bgr,
             assigned_wells=assigned_wells,
         )
@@ -99,7 +99,9 @@ class PlateAnalyzerTests(unittest.TestCase):
         self.assertTrue(all(value == 1 for value in gene_values))
         self.assertTrue(all(color == "yellow" for color in well_colors))
         self.assertEqual(clean_result.shape, yellow_bgr.shape)
+        self.assertEqual(ordered_result.shape, yellow_bgr.shape)
         self.assertGreater(int(np.count_nonzero(clean_result != 245)), 0)
+        self.assertGreater(int(np.count_nonzero(ordered_result != 245)), 0)
 
     def _make_candidates(self) -> List[WellCandidate]:
         destination = self.analyzer._helper_destination_corners()
