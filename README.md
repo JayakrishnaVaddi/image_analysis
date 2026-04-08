@@ -6,9 +6,10 @@ correct output ID, classifies well colors using HSV thresholds, saves debug
 artifacts, exports a JSON record locally, and attempts to upload one document
 per run to MongoDB.
 
-The current gene-readout workflow recognizes only `light pink`, `red`, and
-`yellow`. Yellow maps to gene present (`1`), while light pink and red map to
-gene not present (`0`).
+The current gene-readout workflow can classify a wider range of colors,
+including neutral tones and multiple hue bands. Gene mapping is data-driven
+and currently marks `yellow` as gene present (`1`) while the other configured
+colors map to gene not present (`0`) unless changed in `color_profiles.py`.
 
 The current configuration assumes the slab is placed vertically, with `12` rows
 and `8` columns in the warped top-down view.
@@ -20,6 +21,7 @@ and `8` columns in the warped top-down view.
 - `plate_analyzer.py`: Slab helper ROI detection, individual well detection, well ordering, and color classification.
 - `db_handler.py`: MongoDB persistence with graceful failure handling.
 - `config.py`: Tunable thresholds, geometry, preprocessing crop, and fallback crop settings.
+- `color_profiles.py`: Central color definitions, HSV ranges, visualization colors, and gene mapping.
 - `output/`: Generated images and JSON result files.
 
 ## Manual Virtual Environment Setup
@@ -151,7 +153,7 @@ reviewed later.
 
 ## Tuning HSV Thresholds
 
-HSV color thresholds live in `config.py` under `HSV_THRESHOLDS`.
+HSV color thresholds live in `color_profiles.py` under `COLOR_PROFILES`.
 
 Guidelines for tuning:
 
@@ -227,7 +229,7 @@ file remains saved locally in `output/`.
 - If the image looks zoomed in, clipped, or oddly framed, use a native 4:3 size in `config.py`. For IMX477, `4056x3040` gives the most context for slab detection and `2028x1520` is the faster lower-resolution option.
 - Image mode fails: make sure the `--image` path exists and is readable.
 - Well detection fails: increase contrast in lighting, tune `WELL_DETECTION` values in `config.py`, or enable manual crop fallback.
-- Colors are misclassified: inspect JSON `avg_hsv` values and update `HSV_THRESHOLDS` in `config.py`.
+- Colors are misclassified: inspect JSON `avg_hsv` values and update `COLOR_PROFILES` in `color_profiles.py`.
 - MongoDB upload fails: verify the URI, server availability, and network access. Local JSON output should still be preserved.
 - Live stream fails: confirm `rpicam-vid` or `libcamera-vid` is available and the camera can be opened by the Raspberry Pi camera tools.
 - Display windows do not appear: avoid using `--display` in headless environments unless a GUI session is available.

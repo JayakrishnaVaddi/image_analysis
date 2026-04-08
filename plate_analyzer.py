@@ -12,7 +12,8 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from config import DETECTION, HSV_THRESHOLDS, MANUAL_CROP, PLATE_GEOMETRY, WELL_DETECTION
+from color_profiles import COLOR_PROFILES, COLOR_PROFILE_BY_NAME, DEFAULT_RENDER_COLOR
+from config import DETECTION, MANUAL_CROP, PLATE_GEOMETRY, WELL_DETECTION
 
 
 LOGGER = logging.getLogger(__name__)
@@ -1311,18 +1312,18 @@ class PlateAnalyzer:
 
     def _classify_hsv(self, hsv: List[float]) -> Optional[str]:
         """
-        Classify a well color using the configured HSV threshold ranges.
+        Classify a well color using the configured color profiles.
         """
 
         h, s, v = hsv
         hsv_int = (int(round(h)), int(round(s)), int(round(v)))
 
-        for color_name, ranges in HSV_THRESHOLDS.items():
-            for threshold in ranges:
+        for profile in COLOR_PROFILES:
+            for threshold in profile.ranges:
                 lower = threshold["lower"]
                 upper = threshold["upper"]
                 if self._in_range(hsv_int, lower, upper):
-                    return color_name
+                    return profile.name
         return None
 
     @staticmethod
@@ -1331,7 +1332,12 @@ class PlateAnalyzer:
         Convert the recognized color into gene presence output.
         """
 
-        return 1 if color_name == "yellow" else 0
+        if color_name is None:
+            return 0
+        profile = COLOR_PROFILE_BY_NAME.get(color_name)
+        if profile is None:
+            return 0
+        return profile.gene_value
 
     @staticmethod
     def _render_bgr_from_color(color_name: Optional[str]) -> Tuple[int, int, int]:
@@ -1339,13 +1345,12 @@ class PlateAnalyzer:
         Convert an internal color label to a clean visualization color.
         """
 
-        mapping: Dict[Optional[str], Tuple[int, int, int]] = {
-            "light_pink": (203, 192, 255),
-            "red": (0, 0, 255),
-            "yellow": (0, 255, 255),
-            None: (220, 220, 220),
-        }
-        return mapping.get(color_name, (220, 220, 220))
+        if color_name is None:
+            return DEFAULT_RENDER_COLOR
+        profile = COLOR_PROFILE_BY_NAME.get(color_name)
+        if profile is None:
+            return DEFAULT_RENDER_COLOR
+        return profile.render_bgr
 
     @staticmethod
     def _well_number(row_index: int, col_index: int) -> int:

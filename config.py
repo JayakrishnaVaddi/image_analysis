@@ -8,7 +8,7 @@ pipeline can stay small, readable, and easy to maintain.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Tuple
 
 
 GridSize = Tuple[int, int]
@@ -203,19 +203,3 @@ RUN_TIMING = RunTimingConfig()
 PREPROCESS_CROP = PreprocessCropConfig()
 STREAM_CROP = StreamCropConfig()
 MANUAL_CROP = ManualCropConfig()
-
-# HSV ranges are deliberately grouped in a simple list format so they can be
-# tuned in the field without touching analysis logic. OpenCV HSV uses:
-# H: 0-179, S: 0-255, V: 0-255.
-HSV_THRESHOLDS: Dict[str, List[Dict[str, Tuple[int, int, int]]]] = {
-    "light_pink": [
-        {"lower": (160, 20, 140), "upper": (179, 120, 255)},
-    ],
-    "red": [
-        {"lower": (0, 100, 60), "upper": (10, 255, 255)},
-        {"lower": (170, 121, 60), "upper": (179, 255, 255)},
-    ],
-    "yellow": [
-        {"lower": (23, 70, 80), "upper": (35, 255, 255)},
-    ],
-}

@@ -12,8 +12,9 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
+from color_profiles import COLOR_PROFILES, COLOR_PROFILE_BY_NAME
 import db_handler
-from config import HSV_THRESHOLDS, MONGO, PLATE_GEOMETRY
+from config import MONGO, PLATE_GEOMETRY
 from main import build_mongo_document, build_run_document, validate_binary_data
 from plate_analyzer import PlateAnalyzer, WellCandidate, WellDetectionError
 
@@ -34,18 +35,49 @@ class PlateAnalyzerTests(unittest.TestCase):
         )
 
     def test_only_three_colors_are_configured(self) -> None:
-        self.assertEqual(set(HSV_THRESHOLDS.keys()), {"light_pink", "red", "yellow"})
+        configured_names = {profile.name for profile in COLOR_PROFILES}
+        self.assertTrue(
+            {
+                "black",
+                "white",
+                "gray",
+                "brown",
+                "red",
+                "orange",
+                "yellow",
+                "lime",
+                "green",
+                "cyan",
+                "blue",
+                "purple",
+                "magenta",
+                "pink",
+            }.issubset(configured_names)
+        )
 
-    def test_only_three_colors_are_recognized(self) -> None:
-        self.assertEqual(self.analyzer._classify_hsv([175, 60, 220]), "light_pink")
+    def test_various_colors_are_recognized(self) -> None:
+        self.assertEqual(self.analyzer._classify_hsv([175, 60, 220]), "pink")
         self.assertEqual(self.analyzer._classify_hsv([2, 180, 180]), "red")
+        self.assertEqual(self.analyzer._classify_hsv([15, 220, 220]), "orange")
         self.assertEqual(self.analyzer._classify_hsv([28, 220, 220]), "yellow")
+        self.assertEqual(self.analyzer._classify_hsv([45, 220, 220]), "lime")
+        self.assertEqual(self.analyzer._classify_hsv([65, 220, 220]), "green")
+        self.assertEqual(self.analyzer._classify_hsv([92, 220, 220]), "cyan")
+        self.assertEqual(self.analyzer._classify_hsv([115, 220, 220]), "blue")
+        self.assertEqual(self.analyzer._classify_hsv([140, 220, 220]), "purple")
+        self.assertEqual(self.analyzer._classify_hsv([155, 220, 220]), "magenta")
+        self.assertEqual(self.analyzer._classify_hsv([15, 160, 90]), "brown")
+        self.assertEqual(self.analyzer._classify_hsv([0, 10, 220]), "white")
+        self.assertEqual(self.analyzer._classify_hsv([0, 10, 120]), "gray")
+        self.assertEqual(self.analyzer._classify_hsv([0, 10, 20]), "black")
 
-    def test_gene_mapping_is_zero_for_pink_and_red_and_one_for_yellow(self) -> None:
-        self.assertEqual(self.analyzer._gene_value_from_color("light_pink"), 0)
+    def test_gene_mapping_comes_from_color_profiles(self) -> None:
+        self.assertEqual(self.analyzer._gene_value_from_color("pink"), 0)
         self.assertEqual(self.analyzer._gene_value_from_color("red"), 0)
         self.assertEqual(self.analyzer._gene_value_from_color("yellow"), 1)
+        self.assertEqual(self.analyzer._gene_value_from_color("green"), 0)
         self.assertEqual(self.analyzer._gene_value_from_color(None), 0)
+        self.assertEqual(COLOR_PROFILE_BY_NAME["yellow"].gene_value, 1)
 
     def test_numbering_order_is_top_to_bottom_and_right_to_left(self) -> None:
         self.assertEqual(self.analyzer._well_number(row_index=0, col_index=7), 1)
