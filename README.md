@@ -1,13 +1,15 @@
 # Raspberry Pi Image Analysis
 
 This project captures an image from a Raspberry Pi camera or loads a test image,
-detects a white 96-well slab, warps it into a top-down view, samples each well,
-classifies well colors using HSV thresholds, saves debug artifacts, exports a
-JSON record locally, and attempts to upload one document per run to MongoDB.
+detects individual wells inside a white 96-well slab, assigns each well the
+correct output ID, classifies well colors using HSV thresholds, saves debug
+artifacts, exports a JSON record locally, and attempts to upload one document
+per run to MongoDB.
 
-The current gene-readout workflow recognizes only `light pink`, `red`, and
-`yellow`. Yellow maps to gene present (`1`), while light pink and red map to
-gene not present (`0`).
+The current gene-readout workflow can classify a wider range of colors,
+including neutral tones and multiple hue bands. Gene mapping is data-driven
+and currently marks `yellow` as gene present (`1`) while the other configured
+colors map to gene not present (`0`) unless changed in `color_profiles.py`.
 
 The current configuration assumes the slab is placed vertically, with `12` rows
 and `8` columns in the warped top-down view.
@@ -16,9 +18,10 @@ and `8` columns in the warped top-down view.
 
 - `main.py`: CLI entry point and end-to-end workflow orchestration.
 - `camera_capture.py`: Camera capture and image loading helpers.
-- `plate_analyzer.py`: Slab detection, perspective transform, well sampling, and color classification.
+- `plate_analyzer.py`: Slab helper ROI detection, individual well detection, well ordering, and color classification.
 - `db_handler.py`: MongoDB persistence with graceful failure handling.
 - `config.py`: Tunable thresholds, geometry, preprocessing crop, and fallback crop settings.
+- `color_profiles.py`: Central color definitions, HSV ranges, visualization colors, and gene mapping.
 - `output/`: Generated images and JSON result files.
 
 ## Manual Virtual Environment Setup
@@ -72,6 +75,21 @@ cd /home/pi/image_analysis
 python3 main.py --mode image --image /path/to/test.jpg
 ```
 
+## Detection Strategy
+
+The current analysis flow uses a hybrid per-well detector:
+
+1. Detect the slab outline as a helper ROI only.
+2. Detect well candidates individually inside that ROI using contour-based
+   analysis with Hough-circle rescue support.
+3. Assign candidates onto the current `12x8` output lattice.
+4. Infer a limited number of missing wells from the fitted lattice if needed.
+5. Sample and classify color from each assigned well independently.
+
+Perspective normalization still exists, but only as a helper stage for
+diagnostics and well ordering. It is no longer the main source of the `96`
+sampling slots.
+
 ## Output Files
 
 Each run writes files into its own folder inside `output/`, for example
@@ -79,11 +97,15 @@ Each run writes files into its own folder inside `output/`, for example
 
 - Original image
 - Cropped analysis input image
-- Slab detection image
-- Warped slab image
-- Grid overlay image
+- Slab helper ROI image
+- Helper warped slab image
+- Raw well candidate image
+- Accepted / inferred well overlay image
+- Labeled well ID image
+- Per-well sample region image
 - Annotated result image
 - Clean grid-only result image
+- Ordered result image
 - JSON results
 
 The stored and uploaded payload contains only:
@@ -126,12 +148,12 @@ That script:
 - logs success or failure clearly
 - prints the inserted document ID on success
 
-If slab detection fails, the original image is still saved so the failure can be
+If well detection fails, the original image is still saved so the failure can be
 reviewed later.
 
 ## Tuning HSV Thresholds
 
-HSV color thresholds live in `config.py` under `HSV_THRESHOLDS`.
+HSV color thresholds live in `color_profiles.py` under `COLOR_PROFILES`.
 
 Guidelines for tuning:
 
@@ -146,23 +168,27 @@ OpenCV HSV ranges are:
 - Saturation: `0-255`
 - Value: `0-255`
 
-## Tuning Grid Placement
+## Tuning Well Detection
 
-If the warped slab includes label gutters or blank borders, tune the active
-well area in `PLATE_GEOMETRY` inside `config.py`:
+Per-well detection tuning now lives primarily in `WELL_DETECTION` inside
+`config.py`.
 
-- `active_left_ratio`
-- `active_top_ratio`
-- `active_right_ratio`
-- `active_bottom_ratio`
+Useful settings include:
 
-These ratios define the usable well grid area inside the warped slab. The green
-inner rectangle in `grid_overlay.jpg` shows the exact region used for well
-sampling.
+- adaptive threshold parameters
+- contour area scale limits
+- minimum circularity
+- ellipse axis ratio tolerance
+- Hough-circle radius limits
+- minimum detected wells required before lattice completion
+- maximum inferred wells allowed before failure
 
-The circle size shown in `grid_overlay.jpg` and `clean_result.jpg` is controlled
-separately from the sampling radius, so the visualization can be larger without
-changing the grid layout or well centers.
+The most useful validation images are:
+
+- `candidate_wells.jpg`
+- `grid_overlay.jpg`
+- `labeled_wells.jpg`
+- `sample_regions.jpg`
 
 ## Manual Crop Fallback
 
@@ -177,8 +203,8 @@ MANUAL_CROP = ManualCropConfig(
 )
 ```
 
-When enabled, the analyzer uses the configured rectangle if contour detection
-does not find a suitable slab boundary.
+When enabled, the analyzer uses the configured rectangle if helper slab ROI
+detection does not find a suitable boundary.
 
 ## Preprocessing Crop
 
@@ -202,8 +228,8 @@ file remains saved locally in `output/`.
 - Camera capture fails: confirm the camera is enabled, that `rpicam-hello` works, and that the correct `--camera-index` is being used.
 - If the image looks zoomed in, clipped, or oddly framed, use a native 4:3 size in `config.py`. For IMX477, `4056x3040` gives the most context for slab detection and `2028x1520` is the faster lower-resolution option.
 - Image mode fails: make sure the `--image` path exists and is readable.
-- Slab detection fails: increase contrast in lighting, tune detection values in `config.py`, or enable manual crop fallback.
-- Colors are misclassified: inspect JSON `avg_hsv` values and update `HSV_THRESHOLDS` in `config.py`.
+- Well detection fails: increase contrast in lighting, tune `WELL_DETECTION` values in `config.py`, or enable manual crop fallback.
+- Colors are misclassified: inspect JSON `avg_hsv` values and update `COLOR_PROFILES` in `color_profiles.py`.
 - MongoDB upload fails: verify the URI, server availability, and network access. Local JSON output should still be preserved.
 - Live stream fails: confirm `rpicam-vid` or `libcamera-vid` is available and the camera can be opened by the Raspberry Pi camera tools.
 - Display windows do not appear: avoid using `--display` in headless environments unless a GUI session is available.

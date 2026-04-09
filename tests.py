@@ -6,33 +6,79 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import List
 from unittest.mock import patch
 
+import cv2
 import numpy as np
 
+from color_profiles import COLOR_PROFILES, COLOR_PROFILE_BY_NAME
 import db_handler
-from config import HSV_THRESHOLDS, MONGO, PLATE_GEOMETRY
+from config import MONGO, PLATE_GEOMETRY
 from main import build_mongo_document, build_run_document, validate_binary_data
-from plate_analyzer import PlateAnalyzer
+from plate_analyzer import PlateAnalyzer, WellCandidate, WellDetectionError
 
 
 class PlateAnalyzerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.analyzer = PlateAnalyzer()
+        self.image_shape = (1400, 1000, 3)
+        self.image = np.zeros(self.image_shape, dtype=np.uint8)
+        self.slab_corners = np.array(
+            [
+                [180, 70],
+                [820, 120],
+                [760, 1310],
+                [140, 1260],
+            ],
+            dtype=np.float32,
+        )
 
-    def test_only_three_colors_are_configured(self) -> None:
-        self.assertEqual(set(HSV_THRESHOLDS.keys()), {"light_pink", "red", "yellow"})
+    def test_color_profiles_are_available_from_single_source(self) -> None:
+        self.assertTrue(COLOR_PROFILES)
+        self.assertEqual(
+            {profile.name for profile in COLOR_PROFILES},
+            set(COLOR_PROFILE_BY_NAME.keys()),
+        )
 
-    def test_only_three_colors_are_recognized(self) -> None:
-        self.assertEqual(self.analyzer._classify_hsv([175, 60, 220]), "light_pink")
-        self.assertEqual(self.analyzer._classify_hsv([2, 180, 180]), "red")
-        self.assertEqual(self.analyzer._classify_hsv([28, 220, 220]), "yellow")
+    def test_each_color_profile_classifies_its_own_midpoint_sample(self) -> None:
+        for profile in COLOR_PROFILES:
+            threshold = profile.ranges[0]
+            lower = threshold["lower"]
+            upper = threshold["upper"]
+            midpoint = [
+                int(round((lower[index] + upper[index]) / 2))
+                for index in range(3)
+            ]
+            self.assertEqual(
+                self.analyzer._classify_hsv(midpoint),
+                profile.name,
+                msg=f"Midpoint sample should classify as {profile.name}",
+            )
 
-    def test_gene_mapping_is_zero_for_pink_and_red_and_one_for_yellow(self) -> None:
-        self.assertEqual(self.analyzer._gene_value_from_color("light_pink"), 0)
-        self.assertEqual(self.analyzer._gene_value_from_color("red"), 0)
-        self.assertEqual(self.analyzer._gene_value_from_color("yellow"), 1)
+    def test_gene_mapping_comes_from_color_profiles(self) -> None:
+        gene_positive_profiles = [
+            profile for profile in COLOR_PROFILES if profile.gene_value == 1
+        ]
+        gene_negative_profiles = [
+            profile for profile in COLOR_PROFILES if profile.gene_value == 0
+        ]
+
+        self.assertTrue(gene_positive_profiles)
+        self.assertTrue(gene_negative_profiles)
+        self.assertEqual(
+            self.analyzer._gene_value_from_color(gene_positive_profiles[0].name),
+            1,
+        )
+        self.assertEqual(
+            self.analyzer._gene_value_from_color(gene_negative_profiles[0].name),
+            0,
+        )
         self.assertEqual(self.analyzer._gene_value_from_color(None), 0)
+        self.assertEqual(
+            COLOR_PROFILE_BY_NAME[gene_positive_profiles[0].name].gene_value,
+            1,
+        )
 
     def test_numbering_order_is_top_to_bottom_and_right_to_left(self) -> None:
         self.assertEqual(self.analyzer._well_number(row_index=0, col_index=7), 1)
@@ -42,27 +88,86 @@ class PlateAnalyzerTests(unittest.TestCase):
         self.assertEqual(self.analyzer._well_number(row_index=1, col_index=0), 16)
         self.assertEqual(self.analyzer._well_number(row_index=11, col_index=0), 96)
 
-    def test_analyze_wells_returns_exactly_96_gene_values(self) -> None:
-        yellow_bgr = np.full(
-            (PLATE_GEOMETRY.warp_height, PLATE_GEOMETRY.warp_width, 3),
-            (0, 255, 255),
-            dtype=np.uint8,
+    def test_assign_well_ids_maps_detected_points_into_current_output_order(self) -> None:
+        candidates = self._make_candidates()
+        assigned_wells, _ = self.analyzer._assign_well_ids(
+            candidates=candidates,
+            slab_corners=self.slab_corners,
+            image=self.image,
+            accepted_overlay=self.image.copy(),
         )
-        gene_values, _, _, _, _ = self.analyzer._analyze_wells(yellow_bgr)
+
+        self.assertEqual(len(assigned_wells), 96)
+        self.assertEqual(assigned_wells[0].well_number, 1)
+        self.assertEqual((assigned_wells[0].row_index, assigned_wells[0].col_index), (0, 7))
+        self.assertEqual(assigned_wells[-1].well_number, 96)
+        self.assertEqual((assigned_wells[-1].row_index, assigned_wells[-1].col_index), (11, 0))
+        self.assertEqual(len({well.label for well in assigned_wells}), 96)
+
+    def test_assign_well_ids_fails_when_too_few_candidates_exist(self) -> None:
+        candidates = self._make_candidates()[:50]
+        with self.assertRaises(WellDetectionError):
+            self.analyzer._assign_well_ids(
+                candidates=candidates,
+                slab_corners=self.slab_corners,
+                image=self.image,
+                accepted_overlay=self.image.copy(),
+            )
+
+    def test_classify_assigned_wells_returns_exactly_96_gene_values(self) -> None:
+        candidates = self._make_candidates()
+        gene_positive_profiles = [
+            profile for profile in COLOR_PROFILES if profile.gene_value == 1
+        ]
+        self.assertTrue(gene_positive_profiles)
+        positive_profile = gene_positive_profiles[0]
+        positive_bgr = np.full(self.image_shape, positive_profile.render_bgr, dtype=np.uint8)
+        assigned_wells, _ = self.analyzer._assign_well_ids(
+            candidates=candidates,
+            slab_corners=self.slab_corners,
+            image=positive_bgr,
+            accepted_overlay=positive_bgr.copy(),
+        )
+        gene_values, well_colors, _, clean_result, ordered_result, _ = self.analyzer._classify_assigned_wells(
+            image=positive_bgr,
+            assigned_wells=assigned_wells,
+        )
+
         self.assertEqual(len(gene_values), 96)
         self.assertTrue(all(value == 1 for value in gene_values))
+        self.assertTrue(all(color == positive_profile.name for color in well_colors))
+        self.assertEqual(clean_result.shape, positive_bgr.shape)
+        self.assertEqual(ordered_result.shape, positive_bgr.shape)
+        self.assertGreater(int(np.count_nonzero(clean_result != 245)), 0)
+        self.assertGreater(int(np.count_nonzero(ordered_result != 245)), 0)
 
-    def test_visualization_circles_are_larger_than_sampling_circles(self) -> None:
-        self.assertGreater(PLATE_GEOMETRY.visualization_radius_ratio, PLATE_GEOMETRY.sample_radius_ratio)
+    def _make_candidates(self) -> List[WellCandidate]:
+        destination = self.analyzer._helper_destination_corners()
+        inverse_transform = cv2.getPerspectiveTransform(destination, self.slab_corners)
+        width_step = PLATE_GEOMETRY.warp_width / PLATE_GEOMETRY.cols
+        height_step = PLATE_GEOMETRY.warp_height / PLATE_GEOMETRY.rows
+        rng = np.random.default_rng(7)
 
-    def test_clean_result_frame_does_not_use_original_image_background(self) -> None:
-        warped = np.zeros(
-            (PLATE_GEOMETRY.warp_height, PLATE_GEOMETRY.warp_width, 3),
-            dtype=np.uint8,
-        )
-        _, _, _, _, clean_result = self.analyzer._analyze_wells(warped)
-        corner_pixel = tuple(int(value) for value in clean_result[5, 5])
-        self.assertEqual(corner_pixel, (245, 245, 245))
+        normalized_points = []
+        for row_index in range(PLATE_GEOMETRY.rows):
+            for col_index in range(PLATE_GEOMETRY.cols):
+                x = ((col_index + 0.5) * width_step) + rng.normal(0.0, 6.0)
+                y = ((row_index + 0.5) * height_step) + rng.normal(0.0, 6.0)
+                normalized_points.append([[x, y]])
+
+        transformed = cv2.perspectiveTransform(np.array(normalized_points, dtype=np.float32), inverse_transform)
+        candidates = [
+            WellCandidate(
+                center=(float(point[0][0]), float(point[0][1])),
+                radius=20.0 + (index % 3),
+                score=0.92,
+                source="test",
+                circularity=0.95,
+            )
+            for index, point in enumerate(transformed)
+        ]
+        rng.shuffle(candidates)
+        return candidates
 
 
 class PayloadTests(unittest.TestCase):
@@ -171,7 +276,7 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(sorted(inserted_documents[0].keys()), ["binaryData", "plateId", "timestamp"])
 
     def test_mongodb_upload_skips_when_no_uri_is_configured(self) -> None:
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True), patch.object(db_handler, "load_local_env", return_value=None):
             inserted_id = db_handler.upload_run_document(
                 {
                     "plateId": "plate-4",

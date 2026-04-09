@@ -24,7 +24,7 @@ from camera_capture import (
 )
 from config import OUTPUT, PREPROCESS_CROP
 from db_handler import upload_run_document
-from plate_analyzer import PlateAnalyzer, SlabDetectionError
+from plate_analyzer import PlateAnalyzer, SlabDetectionError, WellDetectionError
 
 
 LOGGER = logging.getLogger(__name__)
@@ -253,6 +253,18 @@ def save_artifacts(
     save_image(grid_overlay_path, analysis_result.artifacts.grid_overlay)
     saved_files["grid_overlay_image"] = str(grid_overlay_path)
 
+    candidate_wells_path = output_dir / "candidate_wells.jpg"
+    save_image(candidate_wells_path, analysis_result.artifacts.candidate_wells)
+    saved_files["candidate_wells_image"] = str(candidate_wells_path)
+
+    labeled_wells_path = output_dir / "labeled_wells.jpg"
+    save_image(labeled_wells_path, analysis_result.artifacts.labeled_wells)
+    saved_files["labeled_wells_image"] = str(labeled_wells_path)
+
+    sample_regions_path = output_dir / "sample_regions.jpg"
+    save_image(sample_regions_path, analysis_result.artifacts.sample_regions)
+    saved_files["sample_regions_image"] = str(sample_regions_path)
+
     annotated_path = output_dir / "annotated_result.jpg"
     save_image(annotated_path, analysis_result.artifacts.annotated_result)
     saved_files["annotated_result_image"] = str(annotated_path)
@@ -260,6 +272,10 @@ def save_artifacts(
     clean_result_path = output_dir / "clean_result.jpg"
     save_image(clean_result_path, analysis_result.artifacts.clean_result)
     saved_files["clean_result_image"] = str(clean_result_path)
+
+    ordered_result_path = output_dir / "result.jpg"
+    save_image(ordered_result_path, analysis_result.artifacts.ordered_result)
+    saved_files["ordered_result_image"] = str(ordered_result_path)
 
     return saved_files
 
@@ -299,11 +315,11 @@ def run_analysis(
 
     try:
         analysis_result = analyzer.analyze(analysis_input)
-    except SlabDetectionError as exc:
-        LOGGER.error("Slab detection failed: %s", exc)
+    except (SlabDetectionError, WellDetectionError) as exc:
+        LOGGER.error("Analysis detection failed: %s", exc)
         original_failure_path = run_dir / "original_failed_detection.jpg"
         analyzed_failure_path = run_dir / "analyzed_input_failed_detection.jpg"
-        debug_failure_path = run_dir / "slab_detection_failed.jpg"
+        debug_failure_path = run_dir / "detection_failed.jpg"
         save_image(original_failure_path, image)
         save_image(analyzed_failure_path, analysis_input)
         if exc.debug_image is not None:
@@ -353,7 +369,7 @@ def main() -> int:
             camera_index=args.camera_index,
             display=args.display,
         )
-    except (CameraCaptureError, ImageLoadError, ValueError, OSError, SlabDetectionError) as exc:
+    except (CameraCaptureError, ImageLoadError, ValueError, OSError, SlabDetectionError, WellDetectionError) as exc:
         LOGGER.error("Analysis failed: %s", exc)
         return 1
     except Exception as exc:  # pragma: no cover - defensive catch for field usage.
