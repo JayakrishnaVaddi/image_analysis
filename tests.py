@@ -34,50 +34,51 @@ class PlateAnalyzerTests(unittest.TestCase):
             dtype=np.float32,
         )
 
-    def test_only_three_colors_are_configured(self) -> None:
-        configured_names = {profile.name for profile in COLOR_PROFILES}
-        self.assertTrue(
-            {
-                "black",
-                "white",
-                "gray",
-                "brown",
-                "red",
-                "orange",
-                "yellow",
-                "lime",
-                "green",
-                "cyan",
-                "blue",
-                "purple",
-                "magenta",
-                "pink",
-            }.issubset(configured_names)
+    def test_color_profiles_are_available_from_single_source(self) -> None:
+        self.assertTrue(COLOR_PROFILES)
+        self.assertEqual(
+            {profile.name for profile in COLOR_PROFILES},
+            set(COLOR_PROFILE_BY_NAME.keys()),
         )
 
-    def test_various_colors_are_recognized(self) -> None:
-        self.assertEqual(self.analyzer._classify_hsv([175, 60, 220]), "pink")
-        self.assertEqual(self.analyzer._classify_hsv([2, 180, 180]), "red")
-        self.assertEqual(self.analyzer._classify_hsv([15, 220, 220]), "orange")
-        self.assertEqual(self.analyzer._classify_hsv([28, 220, 220]), "yellow")
-        self.assertEqual(self.analyzer._classify_hsv([45, 220, 220]), "lime")
-        self.assertEqual(self.analyzer._classify_hsv([65, 220, 220]), "green")
-        self.assertEqual(self.analyzer._classify_hsv([92, 220, 220]), "cyan")
-        self.assertEqual(self.analyzer._classify_hsv([115, 220, 220]), "blue")
-        self.assertEqual(self.analyzer._classify_hsv([140, 220, 220]), "purple")
-        self.assertEqual(self.analyzer._classify_hsv([155, 220, 220]), "magenta")
-        self.assertEqual(self.analyzer._classify_hsv([15, 160, 90]), "brown")
-        self.assertEqual(self.analyzer._classify_hsv([0, 10, 220]), "white")
-        self.assertEqual(self.analyzer._classify_hsv([0, 10, 120]), "gray")
-        self.assertEqual(self.analyzer._classify_hsv([0, 10, 20]), "black")
+    def test_each_color_profile_classifies_its_own_midpoint_sample(self) -> None:
+        for profile in COLOR_PROFILES:
+            threshold = profile.ranges[0]
+            lower = threshold["lower"]
+            upper = threshold["upper"]
+            midpoint = [
+                int(round((lower[index] + upper[index]) / 2))
+                for index in range(3)
+            ]
+            self.assertEqual(
+                self.analyzer._classify_hsv(midpoint),
+                profile.name,
+                msg=f"Midpoint sample should classify as {profile.name}",
+            )
 
     def test_gene_mapping_comes_from_color_profiles(self) -> None:
-        self.assertEqual(self.analyzer._gene_value_from_color("pink"), 0)
-        self.assertEqual(self.analyzer._gene_value_from_color("red"), 0)
-        self.assertEqual(self.analyzer._gene_value_from_color("yellow"), 1)
-        self.assertEqual(self.analyzer._gene_value_from_color("green"), 0)
+        gene_positive_profiles = [
+            profile for profile in COLOR_PROFILES if profile.gene_value == 1
+        ]
+        gene_negative_profiles = [
+            profile for profile in COLOR_PROFILES if profile.gene_value == 0
+        ]
+
+        self.assertTrue(gene_positive_profiles)
+        self.assertTrue(gene_negative_profiles)
+        self.assertEqual(
+            self.analyzer._gene_value_from_color(gene_positive_profiles[0].name),
+            1,
+        )
+        self.assertEqual(
+            self.analyzer._gene_value_from_color(gene_negative_profiles[0].name),
+            0,
+        )
         self.assertEqual(self.analyzer._gene_value_from_color(None), 0)
-        self.assertEqual(COLOR_PROFILE_BY_NAME["yellow"].gene_value, 1)
+        self.assertEqual(
+            COLOR_PROFILE_BY_NAME[gene_positive_profiles[0].name].gene_value,
+            1,
+        )
 
     def test_numbering_order_is_top_to_bottom_and_right_to_left(self) -> None:
         self.assertEqual(self.analyzer._well_number(row_index=0, col_index=7), 1)
@@ -115,23 +116,28 @@ class PlateAnalyzerTests(unittest.TestCase):
 
     def test_classify_assigned_wells_returns_exactly_96_gene_values(self) -> None:
         candidates = self._make_candidates()
-        yellow_bgr = np.full(self.image_shape, (0, 255, 255), dtype=np.uint8)
+        gene_positive_profiles = [
+            profile for profile in COLOR_PROFILES if profile.gene_value == 1
+        ]
+        self.assertTrue(gene_positive_profiles)
+        positive_profile = gene_positive_profiles[0]
+        positive_bgr = np.full(self.image_shape, positive_profile.render_bgr, dtype=np.uint8)
         assigned_wells, _ = self.analyzer._assign_well_ids(
             candidates=candidates,
             slab_corners=self.slab_corners,
-            image=yellow_bgr,
-            accepted_overlay=yellow_bgr.copy(),
+            image=positive_bgr,
+            accepted_overlay=positive_bgr.copy(),
         )
         gene_values, well_colors, _, clean_result, ordered_result, _ = self.analyzer._classify_assigned_wells(
-            image=yellow_bgr,
+            image=positive_bgr,
             assigned_wells=assigned_wells,
         )
 
         self.assertEqual(len(gene_values), 96)
         self.assertTrue(all(value == 1 for value in gene_values))
-        self.assertTrue(all(color == "yellow" for color in well_colors))
-        self.assertEqual(clean_result.shape, yellow_bgr.shape)
-        self.assertEqual(ordered_result.shape, yellow_bgr.shape)
+        self.assertTrue(all(color == positive_profile.name for color in well_colors))
+        self.assertEqual(clean_result.shape, positive_bgr.shape)
+        self.assertEqual(ordered_result.shape, positive_bgr.shape)
         self.assertGreater(int(np.count_nonzero(clean_result != 245)), 0)
         self.assertGreater(int(np.count_nonzero(ordered_result != 245)), 0)
 

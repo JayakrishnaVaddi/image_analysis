@@ -29,52 +29,38 @@ class ColorProfile:
 
 COLOR_PROFILES: List[ColorProfile] = [
     ColorProfile(
-        name="black",
-        ranges=[
-            {"lower": (0, 0, 0), "upper": (179, 255, 45)},
-        ],
-        render_bgr=(35, 35, 35),
-    ),
-    ColorProfile(
         name="white",
         ranges=[
-            {"lower": (0, 0, 190), "upper": (179, 40, 255)},
+            {"lower": (0, 0, 200), "upper": (179, 45, 255)},
         ],
         render_bgr=(245, 245, 245),
     ),
     ColorProfile(
-        name="gray",
-        ranges=[
-            {"lower": (0, 0, 46), "upper": (179, 45, 189)},
-        ],
-        render_bgr=(160, 160, 160),
-    ),
-    ColorProfile(
         name="brown",
         ranges=[
-            {"lower": (5, 80, 35), "upper": (20, 255, 170)},
+            {"lower": (8, 90, 45), "upper": (22, 255, 170)},
         ],
         render_bgr=(42, 95, 165),
     ),
     ColorProfile(
         name="red",
         ranges=[
-            {"lower": (0, 90, 60), "upper": (10, 255, 255)},
-            {"lower": (170, 90, 60), "upper": (179, 255, 255)},
+            {"lower": (0, 120, 80), "upper": (7, 255, 255)},
+            {"lower": (174, 120, 80), "upper": (179, 255, 255)},
         ],
         render_bgr=(0, 0, 255),
     ),
     ColorProfile(
         name="orange",
         ranges=[
-            {"lower": (11, 90, 70), "upper": (22, 255, 255)},
+            {"lower": (8, 130, 171), "upper": (22, 255, 255)},
         ],
         render_bgr=(0, 140, 255),
     ),
     ColorProfile(
         name="yellow",
         ranges=[
-            {"lower": (23, 70, 80), "upper": (38, 255, 255)},
+            {"lower": (23, 90, 140), "upper": (38, 255, 255)},
         ],
         render_bgr=(0, 255, 255),
         gene_value=1,
@@ -82,44 +68,51 @@ COLOR_PROFILES: List[ColorProfile] = [
     ColorProfile(
         name="lime",
         ranges=[
-            {"lower": (39, 70, 70), "upper": (50, 255, 255)},
+            {"lower": (39, 90, 100), "upper": (55, 255, 255)},
         ],
         render_bgr=(0, 255, 170),
     ),
     ColorProfile(
         name="green",
         ranges=[
-            {"lower": (51, 60, 50), "upper": (85, 255, 255)},
+            {"lower": (56, 80, 70), "upper": (84, 255, 255)},
         ],
         render_bgr=(0, 180, 0),
     ),
     ColorProfile(
         name="cyan",
         ranges=[
-            {"lower": (86, 55, 60), "upper": (100, 255, 255)},
+            {"lower": (85, 70, 80), "upper": (100, 255, 255)},
         ],
         render_bgr=(255, 255, 0),
     ),
     ColorProfile(
-        name="purple",
+        name="blue",
         ranges=[
-            {"lower": (131, 55, 55), "upper": (150, 255, 255)},
+            {"lower": (101, 70, 70), "upper": (120, 255, 255)},
+        ],
+        render_bgr=(255, 80, 0),
+    ),
+    ColorProfile(
+        name="indigo",
+        ranges=[
+            {"lower": (121, 70, 70), "upper": (135, 255, 255)},
+        ],
+        render_bgr=(130, 0, 75),
+    ),
+    ColorProfile(
+        name="violet",
+        ranges=[
+            {"lower": (136, 70, 70), "upper": (159, 255, 255)},
         ],
         render_bgr=(180, 60, 180),
     ),
     ColorProfile(
-        name="magenta",
-        ranges=[
-            {"lower": (151, 70, 70), "upper": (169, 255, 255)},
-        ],
-        render_bgr=(255, 0, 255),
-    ),
-    ColorProfile(
         name="pink",
         ranges=[
-            {"lower": (160, 20, 140), "upper": (179, 150, 255)},
+            {"lower": (160, 100, 170), "upper": (173, 255, 255)},
         ],
-        render_bgr=(203, 192, 255),
+        render_bgr=(78, 32, 238),
     ),
 ]
 

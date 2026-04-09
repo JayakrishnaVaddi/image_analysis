@@ -310,10 +310,7 @@ class PlateAnalyzer:
         gray = cv2.cvtColor(helper_warp, cv2.COLOR_BGR2GRAY)
         hsv = cv2.cvtColor(helper_warp, cv2.COLOR_BGR2HSV)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        expected_radius = max(
-            4.0,
-            min(warp_width / max(PLATE_GEOMETRY.cols, 1), warp_height / max(PLATE_GEOMETRY.rows, 1)) * 0.28,
-        )
+        expected_radius = max(4.0, float(WELL_DETECTION.fixed_candidate_radius_px))
 
         helper_roi_mask = np.zeros((warp_height, warp_width), dtype=np.uint8)
         left = max(0, int(round(warp_width * max(0.0, PLATE_GEOMETRY.active_left_ratio - 0.03))))
@@ -372,7 +369,11 @@ class PlateAnalyzer:
                     mapped = cv2.perspectiveTransform(contour_points, inverse_transform).astype(np.int32)
                     cv2.polylines(raw_overlay, [mapped.reshape(-1, 2)], True, (0, 0, 255), 1)
                 continue
-            mapped_candidate = self._map_helper_candidate_to_image(candidate, inverse_transform)
+            mapped_candidate = self._map_helper_candidate_to_image(
+                candidate,
+                inverse_transform,
+                radius_override=expected_radius,
+            )
             center = tuple(int(round(value)) for value in mapped_candidate.center)
             radius = max(2, int(round(mapped_candidate.radius)))
             if accepted:
@@ -398,7 +399,11 @@ class PlateAnalyzer:
             expected_radius=expected_radius,
         )
         mapped_hough_candidates = [
-            self._map_helper_candidate_to_image(candidate, inverse_transform)
+            self._map_helper_candidate_to_image(
+                candidate,
+                inverse_transform,
+                radius_override=expected_radius,
+            )
             for candidate in hough_candidates
         ]
         for candidate in mapped_hough_candidates:
@@ -408,7 +413,7 @@ class PlateAnalyzer:
 
         merged_candidates = self._merge_candidate_lists(
             contour_candidates + mapped_hough_candidates,
-            expected_radius=max(4.0, self._estimate_expected_radius(slab_corners)),
+            expected_radius=expected_radius,
         )
         if len(merged_candidates) < WELL_DETECTION.min_detected_wells:
             LOGGER.info(
@@ -508,7 +513,13 @@ class PlateAnalyzer:
                     circularity=best_local.circularity,
                 )
 
-            candidates.append(self._map_helper_candidate_to_image(helper_candidate, inverse_transform))
+            candidates.append(
+                self._map_helper_candidate_to_image(
+                    helper_candidate,
+                    inverse_transform,
+                    radius_override=expected_radius,
+                )
+            )
 
         return candidates
 
@@ -750,6 +761,15 @@ class PlateAnalyzer:
             slab_corners.astype(np.float32),
         )
 
+        uniform_sample_radius = max(
+            3,
+            int(round(median_radius * WELL_DETECTION.sample_radius_scale)),
+        )
+        uniform_visualization_radius = max(
+            3,
+            int(round(median_radius * WELL_DETECTION.visualization_radius_scale)),
+        )
+
         labeled = image.copy()
         cv2.polylines(labeled, [slab_corners.astype(np.int32)], True, (0, 255, 255), 2)
         assigned: List[WellDetail] = []
@@ -773,7 +793,6 @@ class PlateAnalyzer:
                     source_radius = float(candidate.radius)
 
                 center = (int(round(image_point[0])), int(round(image_point[1])))
-                sample_radius = max(3, int(round(source_radius * WELL_DETECTION.sample_radius_scale)))
                 well_number = self._well_number(row_index=row_index, col_index=col_index)
                 well_detail = WellDetail(
                     well_number=well_number,
@@ -781,7 +800,7 @@ class PlateAnalyzer:
                     col_index=col_index,
                     label=self._well_label(row_index=row_index, col_index=col_index),
                     center=center,
-                    sample_radius=sample_radius,
+                    sample_radius=uniform_sample_radius,
                     source_radius=source_radius,
                     score=score,
                     detected=detected,
@@ -792,7 +811,7 @@ class PlateAnalyzer:
                 cv2.circle(
                     labeled,
                     center,
-                    max(3, int(round(source_radius * WELL_DETECTION.visualization_radius_scale))),
+                    uniform_visualization_radius,
                     render_color,
                     2,
                 )
@@ -837,8 +856,8 @@ class PlateAnalyzer:
             3,
             int(
                 round(
-                    np.median([well.source_radius for well in assigned_wells])
-                    * WELL_DETECTION.visualization_radius_scale
+                    np.median([well.sample_radius for well in assigned_wells])
+                    * (WELL_DETECTION.visualization_radius_scale / max(WELL_DETECTION.sample_radius_scale, 1e-6))
                 )
             ),
         )
@@ -931,9 +950,9 @@ class PlateAnalyzer:
         usable_height = max(image_height - (2 * margin_y), rows)
         cell_width = usable_width / cols
         cell_height = usable_height / rows
-        circle_radius = min(
+        circle_radius = max(
             uniform_visualization_radius,
-            max(6, int(round(min(cell_width, cell_height) * 0.32))),
+            max(8, int(round(min(cell_width, cell_height) * 0.38))),
         )
         ordered_wells = sorted(assigned_wells, key=lambda well: well.well_number)
 
@@ -974,29 +993,6 @@ class PlateAnalyzer:
                 }
             )
         return normalized_candidates
-
-    def _estimate_expected_radius(self, slab_corners: np.ndarray) -> float:
-        """
-        Estimate one reasonable well radius from the helper slab quad.
-        """
-
-        width = max(
-            (
-                np.linalg.norm(slab_corners[1] - slab_corners[0]) +
-                np.linalg.norm(slab_corners[2] - slab_corners[3])
-            ) / 2.0,
-            1.0,
-        )
-        height = max(
-            (
-                np.linalg.norm(slab_corners[3] - slab_corners[0]) +
-                np.linalg.norm(slab_corners[2] - slab_corners[1])
-            ) / 2.0,
-            1.0,
-        )
-        cell_width = width / max(PLATE_GEOMETRY.cols, 1)
-        cell_height = height / max(PLATE_GEOMETRY.rows, 1)
-        return max(4.0, min(cell_width, cell_height) * 0.28)
 
     def _expected_helper_centers(self) -> List[Tuple[float, float]]:
         """
@@ -1288,18 +1284,20 @@ class PlateAnalyzer:
         self,
         candidate: WellCandidate,
         inverse_transform: np.ndarray,
+        radius_override: Optional[float] = None,
     ) -> WellCandidate:
         """
         Map one helper-warp candidate back into analysis-input coordinates.
         """
 
+        helper_radius = candidate.radius if radius_override is None else radius_override
         image_center = self._inverse_normalized_point(
             inverse_transform=inverse_transform,
             normalized_point=candidate.center,
         )
         edge_point = self._inverse_normalized_point(
             inverse_transform=inverse_transform,
-            normalized_point=(candidate.center[0] + candidate.radius, candidate.center[1]),
+            normalized_point=(candidate.center[0] + helper_radius, candidate.center[1]),
         )
         mapped_radius = max(2.0, math.dist(image_center, edge_point))
         return WellCandidate(
@@ -1324,7 +1322,21 @@ class PlateAnalyzer:
                 upper = threshold["upper"]
                 if self._in_range(hsv_int, lower, upper):
                     return profile.name
-        return None
+
+        closest_name: Optional[str] = None
+        closest_distance = float("inf")
+        for profile in COLOR_PROFILES:
+            for threshold in profile.ranges:
+                distance = self._distance_to_hsv_range(
+                    value=hsv_int,
+                    lower=threshold["lower"],
+                    upper=threshold["upper"],
+                )
+                if distance < closest_distance:
+                    closest_distance = distance
+                    closest_name = profile.name
+
+        return closest_name
 
     @staticmethod
     def _gene_value_from_color(color_name: Optional[str]) -> int:
@@ -1380,6 +1392,30 @@ class PlateAnalyzer:
         """
 
         return all(lower[index] <= value[index] <= upper[index] for index in range(3))
+
+    @staticmethod
+    def _distance_to_hsv_range(
+        value: Tuple[int, int, int],
+        lower: Tuple[int, int, int],
+        upper: Tuple[int, int, int],
+    ) -> float:
+        """
+        Measure how far an HSV sample lies outside one configured range.
+        """
+
+        weighted_distance = 0.0
+        channel_weights = (3.0, 0.08, 0.05)
+
+        for index, channel_value in enumerate(value):
+            if channel_value < lower[index]:
+                delta = float(lower[index] - channel_value)
+            elif channel_value > upper[index]:
+                delta = float(channel_value - upper[index])
+            else:
+                delta = 0.0
+            weighted_distance += delta * channel_weights[index]
+
+        return weighted_distance
 
     @staticmethod
     def _order_points(points: np.ndarray) -> np.ndarray:

@@ -126,6 +126,9 @@ class WellDetectionConfig:
     hough_min_dist_scale: float = 1.5
     hough_param1: int = 110
     hough_param2: int = 12
+    # Fixed well radius in helper-warp pixels for this controlled device setup.
+    # This is the main value to tweak if candidate circles look too large/small.
+    fixed_candidate_radius_px: float = 24.0
     hough_min_radius_scale: float = 0.55
     hough_max_radius_scale: float = 1.15
     row_cluster_count: int = 12
