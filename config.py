@@ -133,7 +133,7 @@ class WellDetectionConfig:
     min_detected_wells: int = 56
     max_inferred_wells: int = 40
     max_assignment_error_scale: float = 0.72
-    sample_radius_scale: float = 0.56
+    sample_radius_scale: float = 0.42
     visualization_radius_scale: float = 0.88
 
 

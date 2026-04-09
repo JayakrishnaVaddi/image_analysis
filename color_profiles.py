@@ -101,13 +101,6 @@ COLOR_PROFILES: List[ColorProfile] = [
         render_bgr=(255, 255, 0),
     ),
     ColorProfile(
-        name="blue",
-        ranges=[
-            {"lower": (101, 60, 50), "upper": (130, 255, 255)},
-        ],
-        render_bgr=(255, 80, 0),
-    ),
-    ColorProfile(
         name="purple",
         ranges=[
             {"lower": (131, 55, 55), "upper": (150, 255, 255)},
