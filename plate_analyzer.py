@@ -807,24 +807,28 @@ class PlateAnalyzer:
                 )
                 assigned.append(well_detail)
 
-                render_color = (0, 255, 0) if detected else (0, 165, 255)
-                cv2.circle(
-                    labeled,
-                    center,
-                    uniform_visualization_radius,
-                    render_color,
-                    2,
-                )
-                cv2.putText(
-                    labeled,
-                    str(well_number),
-                    (center[0] + 4, center[1] - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.36,
-                    render_color,
-                    1,
-                    cv2.LINE_AA,
-                )
+        assigned = self._align_assigned_well_centers(assigned)
+
+        for well_detail in assigned:
+            center = well_detail.center
+            render_color = (0, 255, 0) if well_detail.detected else (0, 165, 255)
+            cv2.circle(
+                labeled,
+                center,
+                uniform_visualization_radius,
+                render_color,
+                2,
+            )
+            cv2.putText(
+                labeled,
+                str(well_detail.well_number),
+                (center[0] + 4, center[1] - 4),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.36,
+                render_color,
+                1,
+                cv2.LINE_AA,
+            )
 
         cv2.putText(
             labeled,
@@ -838,6 +842,78 @@ class PlateAnalyzer:
         )
         assigned.sort(key=lambda well: well.well_number)
         return assigned, labeled
+
+    def _align_assigned_well_centers(self, assigned_wells: List[WellDetail]) -> List[WellDetail]:
+        """
+        Regularize assigned centers so rows stay horizontal, columns vertical,
+        and adjacent spacing stays close to constant.
+        """
+
+        if not assigned_wells:
+            return assigned_wells
+
+        row_positions: List[float] = []
+        for row_index in range(PLATE_GEOMETRY.rows):
+            row_wells = [well for well in assigned_wells if well.row_index == row_index and well.detected]
+            if not row_wells:
+                row_wells = [well for well in assigned_wells if well.row_index == row_index]
+            row_positions.append(float(np.median([well.center[1] for well in row_wells])))
+
+        col_positions: List[float] = []
+        for col_index in range(PLATE_GEOMETRY.cols):
+            col_wells = [well for well in assigned_wells if well.col_index == col_index and well.detected]
+            if not col_wells:
+                col_wells = [well for well in assigned_wells if well.col_index == col_index]
+            col_positions.append(float(np.median([well.center[0] for well in col_wells])))
+
+        regularized_rows = self._regularize_axis_positions(row_positions)
+        regularized_cols = self._regularize_axis_positions(col_positions)
+
+        aligned_wells: List[WellDetail] = []
+        for well in assigned_wells:
+            aligned_wells.append(
+                WellDetail(
+                    well_number=well.well_number,
+                    row_index=well.row_index,
+                    col_index=well.col_index,
+                    label=well.label,
+                    center=(
+                        int(round(regularized_cols[well.col_index])),
+                        int(round(regularized_rows[well.row_index])),
+                    ),
+                    sample_radius=well.sample_radius,
+                    source_radius=well.source_radius,
+                    score=well.score,
+                    detected=well.detected,
+                    color=well.color,
+                    gene_value=well.gene_value,
+                )
+            )
+
+        return aligned_wells
+
+    @staticmethod
+    def _regularize_axis_positions(axis_positions: List[float]) -> List[float]:
+        """
+        Fit one evenly spaced axis through noisy row/column center estimates.
+        """
+
+        if not axis_positions:
+            return axis_positions
+
+        if len(axis_positions) == 1:
+            return [float(axis_positions[0])]
+
+        indices = np.arange(len(axis_positions), dtype=np.float32)
+        values = np.array(axis_positions, dtype=np.float32)
+        slope, intercept = np.polyfit(indices, values, 1)
+
+        if slope < 0:
+            slope = abs(slope)
+            intercept = float(values[0])
+
+        regularized = [float((slope * index) + intercept) for index in indices]
+        return regularized
 
     def _classify_assigned_wells(
         self,
@@ -860,6 +936,10 @@ class PlateAnalyzer:
                     * (WELL_DETECTION.visualization_radius_scale / max(WELL_DETECTION.sample_radius_scale, 1e-6))
                 )
             ),
+        )
+        annotated_visualization_radius = max(
+            3,
+            int(round(uniform_visualization_radius * 0.88)),
         )
 
         well_values: List[int] = [0] * (PLATE_GEOMETRY.rows * PLATE_GEOMETRY.cols)
@@ -917,7 +997,7 @@ class PlateAnalyzer:
             cv2.circle(
                 annotated,
                 well.center,
-                max(3, int(round(well.source_radius * WELL_DETECTION.visualization_radius_scale))),
+                annotated_visualization_radius,
                 render_color,
                 2,
             )
