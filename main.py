@@ -22,7 +22,7 @@ from camera_capture import (
     display_image,
     load_image,
 )
-from config import OUTPUT, PREPROCESS_CROP
+from config import OUTPUT, PREPROCESS_CROP, PREPROCESS_SMOOTHING
 from db_handler import upload_run_document
 from plate_analyzer import PlateAnalyzer, SlabDetectionError, WellDetectionError
 
@@ -154,19 +154,33 @@ def acquire_image(args: argparse.Namespace):
 
 def preprocess_image(image: np.ndarray) -> np.ndarray:
     """
-    Optionally crop the input image before slab detection.
+    Optionally smooth and crop the input image before slab detection.
     """
 
-    if not PREPROCESS_CROP.enabled:
-        return image
+    processed = image.copy()
 
-    image_height, image_width = image.shape[:2]
+    if PREPROCESS_SMOOTHING.enabled:
+        processed = cv2.GaussianBlur(
+            processed,
+            PREPROCESS_SMOOTHING.gaussian_kernel,
+            PREPROCESS_SMOOTHING.gaussian_sigma,
+        )
+        LOGGER.info(
+            "Applied preprocessing smoothing: kernel=%s sigma=%s",
+            PREPROCESS_SMOOTHING.gaussian_kernel,
+            PREPROCESS_SMOOTHING.gaussian_sigma,
+        )
+
+    if not PREPROCESS_CROP.enabled:
+        return processed
+
+    image_height, image_width = processed.shape[:2]
     left = max(0, min(image_width - 1, int(round(image_width * PREPROCESS_CROP.left_ratio))))
     top = max(0, min(image_height - 1, int(round(image_height * PREPROCESS_CROP.top_ratio))))
     right = max(left + 1, min(image_width, int(round(image_width * PREPROCESS_CROP.right_ratio))))
     bottom = max(top + 1, min(image_height, int(round(image_height * PREPROCESS_CROP.bottom_ratio))))
 
-    cropped = image[top:bottom, left:right].copy()
+    cropped = processed[top:bottom, left:right].copy()
     LOGGER.info(
         "Applied preprocessing crop: left=%s top=%s right=%s bottom=%s shape=%s",
         left,
