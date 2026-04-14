@@ -28,6 +28,13 @@ from plate_analyzer import PlateAnalyzer, SlabDetectionError, WellDetectionError
 
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_CALIBRATION_PATH = "camera_calibration.json"
+
+
+class CalibrationError(RuntimeError):
+    """
+    Raised when camera calibration data is missing or invalid.
+    """
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -139,17 +146,144 @@ def acquire_image(args: argparse.Namespace):
     Acquire an image from the configured source.
     """
 
+    LOGGER.info("Loading original input image using mode=%s", args.mode)
+
     if args.mode == "live":
         scratch_dir = ensure_output_directory()
-        return capture_frame(
+        image = capture_frame(
             camera_index=args.camera_index,
             scratch_dir=scratch_dir,
         )
+        LOGGER.info("Original image loaded from live camera with shape %s", image.shape)
+        return image
 
     if not args.image:
         raise ValueError("--image is required when --mode image is used")
 
-    return load_image(args.image)
+    image = load_image(args.image)
+    LOGGER.info("Original image loaded from disk with shape %s", image.shape)
+    return image
+
+
+def load_camera_calibration(calibration_path: str = DEFAULT_CALIBRATION_PATH) -> tuple[np.ndarray, np.ndarray, int, int]:
+    """
+    Load and validate camera calibration data from JSON.
+    """
+
+    calibration_file = Path(__file__).resolve().parent / calibration_path
+
+    try:
+        with calibration_file.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError as exc:
+        LOGGER.error("Calibration file not found: %s", calibration_file)
+        raise CalibrationError(f"Calibration file not found: {calibration_file}") from exc
+    except json.JSONDecodeError as exc:
+        LOGGER.error("Calibration file is malformed JSON: %s", calibration_file)
+        raise CalibrationError(f"Calibration file is malformed JSON: {calibration_file}") from exc
+    except OSError as exc:
+        LOGGER.error("Failed to read calibration file %s: %s", calibration_file, exc)
+        raise CalibrationError(f"Failed to read calibration file: {calibration_file}") from exc
+
+    required_fields = (
+        "camera_matrix",
+        "distortion_coefficients",
+        "image_width",
+        "image_height",
+    )
+    missing_fields = [field for field in required_fields if field not in payload]
+    if missing_fields:
+        LOGGER.error("Calibration file %s is missing required fields: %s", calibration_file, missing_fields)
+        raise CalibrationError(
+            f"Calibration file is incomplete; missing fields: {', '.join(missing_fields)}"
+        )
+
+    camera_matrix = np.asarray(payload["camera_matrix"], dtype=np.float64)
+    distortion_coefficients = np.asarray(payload["distortion_coefficients"], dtype=np.float64).reshape(-1)
+
+    if camera_matrix.shape != (3, 3):
+        LOGGER.error("Calibration camera_matrix must be 3x3, got shape %s", camera_matrix.shape)
+        raise CalibrationError(f"Calibration camera_matrix must be 3x3, got {camera_matrix.shape}")
+
+    if distortion_coefficients.ndim != 1 or distortion_coefficients.size == 0:
+        LOGGER.error(
+            "Calibration distortion_coefficients must be a non-empty 1D array, got shape %s",
+            distortion_coefficients.shape,
+        )
+        raise CalibrationError(
+            "Calibration distortion_coefficients must be a non-empty 1D array"
+        )
+
+    try:
+        image_width = int(payload["image_width"])
+        image_height = int(payload["image_height"])
+    except (TypeError, ValueError) as exc:
+        LOGGER.error("Calibration image_width/image_height must be integers in %s", calibration_file)
+        raise CalibrationError("Calibration image_width/image_height must be integers") from exc
+
+    if image_width <= 0 or image_height <= 0:
+        LOGGER.error(
+            "Calibration image dimensions must be positive, got width=%s height=%s",
+            image_width,
+            image_height,
+        )
+        raise CalibrationError("Calibration image_width/image_height must be positive")
+
+    LOGGER.info(
+        "Calibration file loaded: %s (width=%s height=%s coeffs=%s)",
+        calibration_file,
+        image_width,
+        image_height,
+        distortion_coefficients.size,
+    )
+    return camera_matrix, distortion_coefficients, image_width, image_height
+
+
+def undistort_image(
+    image: np.ndarray,
+    calibration_path: str = DEFAULT_CALIBRATION_PATH,
+) -> np.ndarray:
+    """
+    Undistort an image using the stored camera calibration values.
+    """
+
+    camera_matrix, distortion_coefficients, calibrated_width, calibrated_height = load_camera_calibration(
+        calibration_path=calibration_path
+    )
+
+    image_height, image_width = image.shape[:2]
+    if (image_width, image_height) != (calibrated_width, calibrated_height):
+        LOGGER.warning(
+            "Original image size %sx%s differs from calibration size %sx%s; applying calibration anyway",
+            image_width,
+            image_height,
+            calibrated_width,
+            calibrated_height,
+        )
+
+    new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(
+        camera_matrix,
+        distortion_coefficients,
+        (image_width, image_height),
+        1,
+        (image_width, image_height),
+    )
+    undistorted = cv2.undistort(
+        image,
+        camera_matrix,
+        distortion_coefficients,
+        None,
+        new_camera_matrix,
+    )
+
+    x, y, width, height = roi
+    if width > 0 and height > 0:
+        undistorted = undistorted[y:y + height, x:x + width].copy()
+    else:
+        LOGGER.info("Undistortion ROI was empty; keeping full undistorted frame")
+
+    LOGGER.info("Undistortion applied successfully; undistorted image shape is %s", undistorted.shape)
+    return undistorted
 
 
 def preprocess_image(image: np.ndarray) -> np.ndarray:
@@ -238,7 +372,8 @@ def validate_binary_data(binary_data: Any) -> list[int]:
 
 def save_artifacts(
     output_dir: Path,
-    input_image,
+    original_image,
+    undistorted_image,
     analysis_result,
 ) -> Dict[str, str]:
     """
@@ -248,8 +383,12 @@ def save_artifacts(
     saved_files: Dict[str, str] = {}
 
     original_path = output_dir / "original.jpg"
-    save_image(original_path, input_image)
+    save_image(original_path, original_image)
     saved_files["original_image"] = str(original_path)
+
+    undistorted_path = output_dir / "debug_undistorted.jpg"
+    save_image(undistorted_path, undistorted_image)
+    saved_files["undistorted_image"] = str(undistorted_path)
 
     analyzed_input_path = output_dir / "analyzed_input.jpg"
     save_image(analyzed_input_path, analysis_result.artifacts.original)
@@ -319,12 +458,19 @@ def run_analysis(
     )
 
     try:
-        image = acquire_image(args)
+        original_image = acquire_image(args)
     except (CameraCaptureError, ImageLoadError, ValueError, OSError) as exc:
         LOGGER.error("Failed to acquire image: %s", exc)
         raise
 
-    analysis_input = preprocess_image(image)
+    try:
+        undistorted_image = undistort_image(original_image)
+    except CalibrationError as exc:
+        LOGGER.error("Failed to undistort image: %s", exc)
+        raise
+
+    LOGGER.info("Downstream pipeline now using undistorted image only")
+    analysis_input = preprocess_image(undistorted_image)
     analyzer = PlateAnalyzer()
 
     try:
@@ -332,15 +478,17 @@ def run_analysis(
     except (SlabDetectionError, WellDetectionError) as exc:
         LOGGER.error("Analysis detection failed: %s", exc)
         original_failure_path = run_dir / "original_failed_detection.jpg"
+        undistorted_failure_path = run_dir / "debug_undistorted_failed_detection.jpg"
         analyzed_failure_path = run_dir / "analyzed_input_failed_detection.jpg"
         debug_failure_path = run_dir / "detection_failed.jpg"
-        save_image(original_failure_path, image)
+        save_image(original_failure_path, original_image)
+        save_image(undistorted_failure_path, undistorted_image)
         save_image(analyzed_failure_path, analysis_input)
         if exc.debug_image is not None:
             save_image(debug_failure_path, exc.debug_image)
         raise
 
-    saved_files = save_artifacts(run_dir, image, analysis_result)
+    saved_files = save_artifacts(run_dir, original_image, undistorted_image, analysis_result)
     json_output_path = run_dir / "results.json"
     final_plate_id = plate_id or run_id
     run_document = build_run_document(final_plate_id, timestamp, analysis_result)
@@ -383,7 +531,15 @@ def main() -> int:
             camera_index=args.camera_index,
             display=args.display,
         )
-    except (CameraCaptureError, ImageLoadError, ValueError, OSError, SlabDetectionError, WellDetectionError) as exc:
+    except (
+        CameraCaptureError,
+        ImageLoadError,
+        ValueError,
+        OSError,
+        CalibrationError,
+        SlabDetectionError,
+        WellDetectionError,
+    ) as exc:
         LOGGER.error("Analysis failed: %s", exc)
         return 1
     except Exception as exc:  # pragma: no cover - defensive catch for field usage.
