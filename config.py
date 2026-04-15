@@ -45,6 +45,20 @@ class PreprocessCropConfig:
 
 
 @dataclass(frozen=True)
+class PreprocessSmoothingConfig:
+    """
+    Optional light smoothing applied before analysis starts.
+
+    This helps stabilize color sampling and slab detection when the camera
+    introduces small frame-to-frame noise.
+    """
+
+    enabled: bool = True
+    gaussian_kernel: GridSize = (5, 5)
+    gaussian_sigma: float = 0.0
+
+
+@dataclass(frozen=True)
 class StreamCropConfig:
     """
     Crop applied only to the outgoing live WebSocket stream.
@@ -138,6 +152,11 @@ class WellDetectionConfig:
     max_assignment_error_scale: float = 0.72
     sample_radius_scale: float = 0.42
     visualization_radius_scale: float = 0.88
+    local_refine_window_scale: float = 1.35
+    local_refine_max_shift_scale: float = 0.6
+    local_refine_saturation_min: int = 28
+    local_refine_value_min: int = 25
+    local_refine_min_area_scale: float = 0.18
 
 
 @dataclass(frozen=True)
@@ -204,5 +223,6 @@ CAMERA = CameraConfig()
 MONGO = MongoConfig()
 RUN_TIMING = RunTimingConfig()
 PREPROCESS_CROP = PreprocessCropConfig()
+PREPROCESS_SMOOTHING = PreprocessSmoothingConfig()
 STREAM_CROP = StreamCropConfig()
 MANUAL_CROP = ManualCropConfig()

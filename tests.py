@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +16,14 @@ import numpy as np
 from color_profiles import COLOR_PROFILES, COLOR_PROFILE_BY_NAME
 import db_handler
 from config import MONGO, PLATE_GEOMETRY
-from main import build_mongo_document, build_run_document, validate_binary_data
+from main import (
+    CalibrationError,
+    build_mongo_document,
+    build_run_document,
+    load_camera_calibration,
+    undistort_image,
+    validate_binary_data,
+)
 from plate_analyzer import PlateAnalyzer, WellCandidate, WellDetectionError
 
 
@@ -287,6 +295,83 @@ class PayloadTests(unittest.TestCase):
             )
 
         self.assertIsNone(inserted_id)
+
+
+class CalibrationTests(unittest.TestCase):
+    def test_load_camera_calibration_reads_expected_arrays(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            calibration_path = Path(temp_dir) / "camera_calibration.json"
+            calibration_path.write_text(
+                json.dumps(
+                    {
+                        "camera_matrix": [
+                            [1000.0, 0.0, 320.0],
+                            [0.0, 1000.0, 240.0],
+                            [0.0, 0.0, 1.0],
+                        ],
+                        "distortion_coefficients": [0.1, -0.2, 0.01, 0.0, 0.05],
+                        "image_width": 640,
+                        "image_height": 480,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("main.Path.resolve", return_value=Path(temp_dir) / "main.py"):
+                camera_matrix, distortion_coefficients, image_width, image_height = load_camera_calibration(
+                    "camera_calibration.json"
+                )
+
+        self.assertEqual(camera_matrix.shape, (3, 3))
+        self.assertEqual(distortion_coefficients.shape, (5,))
+        self.assertEqual((image_width, image_height), (640, 480))
+
+    def test_load_camera_calibration_rejects_invalid_matrix_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            calibration_path = Path(temp_dir) / "camera_calibration.json"
+            calibration_path.write_text(
+                json.dumps(
+                    {
+                        "camera_matrix": [[1.0, 0.0], [0.0, 1.0]],
+                        "distortion_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0],
+                        "image_width": 640,
+                        "image_height": 480,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("main.Path.resolve", return_value=Path(temp_dir) / "main.py"):
+                with self.assertRaises(CalibrationError):
+                    load_camera_calibration("camera_calibration.json")
+
+    def test_undistort_image_returns_valid_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            calibration_path = Path(temp_dir) / "camera_calibration.json"
+            calibration_path.write_text(
+                json.dumps(
+                    {
+                        "camera_matrix": [
+                            [600.0, 0.0, 160.0],
+                            [0.0, 600.0, 120.0],
+                            [0.0, 0.0, 1.0],
+                        ],
+                        "distortion_coefficients": [0.01, -0.03, 0.001, 0.0, 0.02],
+                        "image_width": 320,
+                        "image_height": 240,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            image = np.full((240, 320, 3), 180, dtype=np.uint8)
+
+            with patch("main.Path.resolve", return_value=Path(temp_dir) / "main.py"):
+                undistorted = undistort_image(image, "camera_calibration.json")
+
+        self.assertIsInstance(undistorted, np.ndarray)
+        self.assertGreater(undistorted.size, 0)
+        self.assertEqual(undistorted.ndim, 3)
 
 
 if __name__ == "__main__":
