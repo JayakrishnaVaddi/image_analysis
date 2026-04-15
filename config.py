@@ -200,8 +200,12 @@ class MongoConfig:
     uri_env_var: str = "MONGO_URI"
     database_name_env_var: str = "MONGO_DB_NAME"
     collection_name_env_var: str = "MONGO_COLLECTION_NAME"
+    source_database_name_env_var: str = "MONGO_SOURCE_DB_NAME"
+    source_collection_name_env_var: str = "MONGO_SOURCE_COLLECTION_NAME"
     database_name: str = "image_analysis"
     collection_name: str = "well_plate_results"
+    source_database_name: str = "mock-db"
+    source_collection_name: str = "mock-plate"
     server_selection_timeout_ms: int = 3000
 
 

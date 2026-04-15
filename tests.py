@@ -18,9 +18,12 @@ import db_handler
 from config import MONGO, PLATE_GEOMETRY
 from main import (
     CalibrationError,
+    build_mapped_results_documents,
+    build_mapped_mongo_document,
     build_mongo_document,
     build_run_document,
     load_camera_calibration,
+    to_json_safe,
     undistort_image,
     validate_binary_data,
 )
@@ -217,6 +220,57 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(document["plateId"], "plate-1")
         self.assertEqual(len(document["binaryData"]), 96)
 
+    def test_build_mapped_results_documents_appends_present_without_changing_source_fields(self) -> None:
+        mapped_documents = build_mapped_results_documents(
+            [
+                {
+                    "gene": "K",
+                    "allele": "c.1699G>A",
+                    "rsId": "rs1803274",
+                    "assayId": "C__27479669_20",
+                    "wellNum": 1,
+                },
+                {
+                    "gene": "BCHE",
+                    "allele": "c.293A>G",
+                    "rsId": "rs1799807",
+                    "assayId": "C___2411904_20",
+                    "wellNum": "3",
+                },
+                {
+                    "gene": "CYP2B6",
+                    "allele": "*18",
+                    "rsId": "rs28399499",
+                    "assayId": "C___7817765_C0",
+                    "wellNum": "bad",
+                },
+            ],
+            [1 if index in (0, 2) else 0 for index in range(96)],
+        )
+
+        self.assertEqual(len(mapped_documents), 3)
+        self.assertEqual(mapped_documents[0]["gene"], "K")
+        self.assertEqual(mapped_documents[0]["present"], 1)
+        self.assertEqual(mapped_documents[1]["gene"], "BCHE")
+        self.assertEqual(mapped_documents[1]["present"], 1)
+        self.assertEqual(mapped_documents[2]["gene"], "CYP2B6")
+        self.assertEqual(mapped_documents[2]["present"], 0)
+
+    def test_to_json_safe_stringifies_non_json_types_for_mapped_export(self) -> None:
+        class FakeObjectId:
+            def __str__(self) -> str:
+                return "fake-object-id-123"
+
+        converted = to_json_safe(
+            {
+                "_id": FakeObjectId(),
+                "nested": {"items": (1, FakeObjectId())},
+            }
+        )
+
+        self.assertEqual(converted["_id"], "fake-object-id-123")
+        self.assertEqual(converted["nested"]["items"], [1, "fake-object-id-123"])
+
     def test_validate_binary_data_enforces_exactly_96_binary_values(self) -> None:
         self.assertEqual(validate_binary_data([0, 1] * 48), [0, 1] * 48)
 
@@ -237,13 +291,28 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(len(document["binaryData"]), 96)
         self.assertTrue(all(value in (0, 1) for value in document["binaryData"]))
 
+    def test_mapped_mongo_document_contains_results_array(self) -> None:
+        document = build_mapped_mongo_document(
+            plate_id="plate-2",
+            timestamp="2026-03-24T00:00:00+00:00",
+            mapped_results_documents=[
+                {"gene": "K", "wellNum": 7, "present": 1},
+                {"gene": "BCHE", "wellNum": 3, "present": 0},
+            ],
+        )
+
+        self.assertEqual(sorted(document.keys()), ["plateId", "results", "timestamp"])
+        self.assertEqual(document["plateId"], "plate-2")
+        self.assertEqual(len(document["results"]), 2)
+        self.assertEqual(document["results"][0]["present"], 1)
+
     def test_test_payload_matches_requested_shape(self) -> None:
         payload = db_handler.build_test_payload()
         self.assertEqual(payload["plateId"], "test_plate_001")
         self.assertEqual(payload["binaryData"], [0, 1, 0, 1, 0, 1, 0, 1])
         self.assertIn("timestamp", payload)
 
-    def test_mongodb_upload_receives_result_array_document(self) -> None:
+    def test_mongodb_upload_receives_mapped_results_document(self) -> None:
         inserted_documents = []
 
         class FakeCollection:
@@ -272,7 +341,10 @@ class PayloadTests(unittest.TestCase):
         payload = {
             "plateId": "plate-3",
             "timestamp": "2026-03-24T00:00:00+00:00",
-            "binaryData": [0] * 96,
+            "results": [
+                {"gene": "K", "wellNum": 7, "present": 1},
+                {"gene": "BCHE", "wellNum": 3, "present": 0},
+            ],
         }
 
         with patch.object(db_handler, "MongoClient", FakeClient):
@@ -280,8 +352,9 @@ class PayloadTests(unittest.TestCase):
 
         self.assertEqual(inserted_id, "fake-id")
         self.assertEqual(len(inserted_documents), 1)
-        self.assertEqual(inserted_documents[0]["binaryData"], [0] * 96)
-        self.assertEqual(sorted(inserted_documents[0].keys()), ["binaryData", "plateId", "timestamp"])
+        self.assertEqual(inserted_documents[0]["results"][0]["gene"], "K")
+        self.assertEqual(inserted_documents[0]["results"][1]["present"], 0)
+        self.assertEqual(sorted(inserted_documents[0].keys()), ["plateId", "results", "timestamp"])
 
     def test_mongodb_upload_skips_when_no_uri_is_configured(self) -> None:
         with patch.dict("os.environ", {}, clear=True), patch.object(db_handler, "load_local_env", return_value=None):

@@ -9,7 +9,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import MONGO
 
@@ -83,6 +83,24 @@ def resolve_collection_name() -> str:
     return os.getenv(MONGO.collection_name_env_var, MONGO.collection_name)
 
 
+def resolve_source_database_name() -> str:
+    """
+    Resolve the MongoDB source database for the mock plate records.
+    """
+
+    load_local_env()
+    return os.getenv(MONGO.source_database_name_env_var, MONGO.source_database_name)
+
+
+def resolve_source_collection_name() -> str:
+    """
+    Resolve the MongoDB source collection for the mock plate records.
+    """
+
+    load_local_env()
+    return os.getenv(MONGO.source_collection_name_env_var, MONGO.source_collection_name)
+
+
 def connect_to_mongo(mongo_uri: Optional[str] = None) -> Tuple[Optional[MongoClient], Optional[str]]:
     """
     Create a MongoDB client using the configured URI.
@@ -144,6 +162,41 @@ def upload_run_document(document: Dict[str, Any], mongo_uri: Optional[str]) -> O
     except PyMongoError as exc:
         LOGGER.error("MongoDB upload failed: %s", exc)
         return None
+    finally:
+        client.close()
+
+
+def fetch_mock_plate_documents(mongo_uri: Optional[str]) -> List[Dict[str, Any]]:
+    """
+    Read mock plate seed documents from MongoDB without modifying them.
+
+    Returns an empty list on connection/read failure so the image-analysis run
+    can still complete with its original outputs.
+    """
+
+    client: Optional[MongoClient]
+    client, _ = connect_to_mongo(mongo_uri)
+    if client is None:
+        return []
+
+    database_name = resolve_source_database_name()
+    collection_name = resolve_source_collection_name()
+
+    try:
+        database = client[database_name]
+        collection = database[collection_name]
+        client.admin.command("ping")
+        documents = list(collection.find())
+        LOGGER.info(
+            "Loaded %s mock-plate documents from %s.%s",
+            len(documents),
+            database_name,
+            collection_name,
+        )
+        return documents
+    except PyMongoError as exc:
+        LOGGER.error("MongoDB mock-plate read failed: %s", exc)
+        return []
     finally:
         client.close()
 

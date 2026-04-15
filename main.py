@@ -23,7 +23,7 @@ from camera_capture import (
     load_image,
 )
 from config import OUTPUT, PREPROCESS_CROP, PREPROCESS_SMOOTHING
-from db_handler import upload_run_document
+from db_handler import fetch_mock_plate_documents, upload_run_document
 from plate_analyzer import PlateAnalyzer, SlabDetectionError, WellDetectionError
 
 
@@ -139,6 +139,26 @@ def save_json(path: Path, payload: Dict[str, Any]) -> None:
 
     with path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
+
+
+def to_json_safe(value: Any) -> Any:
+    """
+    Convert nested values into JSON-safe equivalents for mapped Mongo output.
+
+    This is used only for the mock-plate export path so BSON-native values such
+    as `ObjectId` do not break local JSON saving. Unknown non-JSON types fall
+    back to `str(value)` instead of stopping the full run.
+    """
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [to_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [to_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): to_json_safe(item) for key, item in value.items()}
+    return str(value)
 
 
 def acquire_image(args: argparse.Namespace):
@@ -356,6 +376,53 @@ def build_mongo_document(plate_id: str, timestamp: str, analysis_result) -> Dict
     }
 
 
+def build_mapped_mongo_document(
+    plate_id: str,
+    timestamp: str,
+    mapped_results_documents: list[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Build the MongoDB payload that stores mapped mock-plate results.
+
+    This keeps `plate_results` aligned with the richer mapped-results output
+    while preserving the existing local `results.json` file on disk.
+    """
+
+    return {
+        "plateId": plate_id,
+        "timestamp": timestamp,
+        "results": mapped_results_documents,
+    }
+
+
+def build_mapped_results_documents(source_documents: list[Dict[str, Any]], binary_data: list[int]) -> list[Dict[str, Any]]:
+    """
+    Copy source mock-plate records and append `present` from the current run.
+
+    This is intentionally inserted after `binaryData` has been finalized, so it
+    inherits the existing well numbering and ordering without changing the
+    analysis pipeline. If a document's `wellNum` is invalid, it falls back to
+    `present=0` and the run continues.
+    """
+
+    mapped_documents: list[Dict[str, Any]] = []
+    for source_document in source_documents:
+        mapped_document = to_json_safe(source_document)
+        raw_well_num = source_document.get("wellNum")
+        try:
+            well_num = int(raw_well_num)
+        except (TypeError, ValueError):
+            well_num = None
+
+        if well_num is not None and 1 <= well_num <= len(binary_data):
+            mapped_document["present"] = int(binary_data[well_num - 1])
+        else:
+            mapped_document["present"] = 0
+        mapped_documents.append(mapped_document)
+
+    return mapped_documents
+
+
 def validate_binary_data(binary_data: Any) -> list[int]:
     """
     Ensure the final result payload is always a 96-element 0/1 array.
@@ -490,14 +557,30 @@ def run_analysis(
 
     saved_files = save_artifacts(run_dir, original_image, undistorted_image, analysis_result)
     json_output_path = run_dir / "results.json"
+    mapped_output_path = run_dir / "mapped_results.json"
     final_plate_id = plate_id or run_id
     run_document = build_run_document(final_plate_id, timestamp, analysis_result)
 
-    mongo_document = build_mongo_document(final_plate_id, timestamp, analysis_result)
-    mongo_inserted_id = upload_run_document(mongo_document, args.mongo_uri)
-
     save_json(json_output_path, run_document)
     LOGGER.info("Saved JSON results to %s", json_output_path)
+
+    mock_plate_documents = fetch_mock_plate_documents(args.mongo_uri)
+    mapped_results_documents = build_mapped_results_documents(
+        mock_plate_documents,
+        run_document["binaryData"],
+    )
+    if mapped_results_documents:
+        save_json(mapped_output_path, {"results": mapped_results_documents})
+        LOGGER.info("Saved mapped mock-plate results to %s", mapped_output_path)
+    else:
+        LOGGER.warning("No mock-plate documents were fetched; skipping mapped_results.json")
+
+    mongo_document = build_mapped_mongo_document(
+        final_plate_id,
+        timestamp,
+        mapped_results_documents,
+    )
+    mongo_inserted_id = upload_run_document(mongo_document, args.mongo_uri)
 
     if display:
         try:
@@ -511,6 +594,7 @@ def run_analysis(
         "payload": run_document,
         "saved_files": saved_files,
         "mongo_inserted_id": mongo_inserted_id,
+        "mapped_results_path": str(mapped_output_path) if mapped_results_documents else None,
     }
 
 
