@@ -2,7 +2,7 @@
 set -euo pipefail
 
 OUTPUT_DIR="calibration_images"
-COUNT=20
+COUNT=30
 
 FRAME_WIDTH=4056
 FRAME_HEIGHT=3040
@@ -25,7 +25,7 @@ echo "Saving images to: $OUTPUT_DIR"
 echo "Resolution: ${FRAME_WIDTH}x${FRAME_HEIGHT}"
 echo
 
-for i in $(seq -w 1 "$COUNT"); do
+for i in $(seq -w 18 "$COUNT"); do
   FILE="${OUTPUT_DIR}/cal_${i}.jpg"
 
   echo "Capture ${i}/${COUNT}: $FILE"

@@ -103,6 +103,19 @@ class WellCandidate:
     circularity: float
 
 
+@dataclass
+class WellCenterRefinement:
+    """
+    One bounded local center-refinement result for a well.
+    """
+
+    original_center: Tuple[int, int]
+    refined_center: Tuple[int, int]
+    refined: bool
+    reason: str
+    mask_area: int = 0
+
+
 class PlateAnalyzer:
     """
     Analyze a 96-well slab image by detecting wells individually.
@@ -808,9 +821,14 @@ class PlateAnalyzer:
                 assigned.append(well_detail)
 
         assigned = self._align_assigned_well_centers(assigned)
+        assigned, refinements = self._refine_assigned_well_centers(
+            image=image,
+            assigned_wells=assigned,
+        )
 
-        for well_detail in assigned:
+        for well_detail, refinement in zip(assigned, refinements, strict=False):
             center = well_detail.center
+            original_center = refinement.original_center
             render_color = (0, 255, 0) if well_detail.detected else (0, 165, 255)
             cv2.circle(
                 labeled,
@@ -819,6 +837,9 @@ class PlateAnalyzer:
                 render_color,
                 2,
             )
+            if refinement.refined:
+                cv2.circle(labeled, original_center, 4, (255, 0, 255), 1)
+                cv2.line(labeled, original_center, center, (255, 0, 255), 1)
             cv2.putText(
                 labeled,
                 str(well_detail.well_number),
@@ -891,6 +912,193 @@ class PlateAnalyzer:
             )
 
         return aligned_wells
+
+    def _refine_assigned_well_centers(
+        self,
+        image: np.ndarray,
+        assigned_wells: List[WellDetail],
+    ) -> Tuple[List[WellDetail], List[WellCenterRefinement]]:
+        """
+        Refine each assigned center inside a small local window using colored liquid pixels.
+        """
+
+        if not assigned_wells:
+            return assigned_wells, []
+
+        hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        refined_wells: List[WellDetail] = []
+        refinements: List[WellCenterRefinement] = []
+
+        for well in assigned_wells:
+            refinement = self._refine_single_well_center(
+                hsv_image=hsv_image,
+                well=well,
+                image_shape=image.shape,
+            )
+            if refinement.refined:
+                LOGGER.info(
+                    "Refined well %s center from %s to %s using local color centroid (mask_area=%s)",
+                    well.label,
+                    refinement.original_center,
+                    refinement.refined_center,
+                    refinement.mask_area,
+                )
+            else:
+                LOGGER.info(
+                    "Kept original center for well %s at %s (%s)",
+                    well.label,
+                    refinement.original_center,
+                    refinement.reason,
+                )
+
+            refined_wells.append(
+                WellDetail(
+                    well_number=well.well_number,
+                    row_index=well.row_index,
+                    col_index=well.col_index,
+                    label=well.label,
+                    center=refinement.refined_center,
+                    sample_radius=well.sample_radius,
+                    source_radius=well.source_radius,
+                    score=well.score,
+                    detected=well.detected,
+                    color=well.color,
+                    gene_value=well.gene_value,
+                )
+            )
+            refinements.append(refinement)
+
+        return refined_wells, refinements
+
+    def _refine_single_well_center(
+        self,
+        hsv_image: np.ndarray,
+        well: WellDetail,
+        image_shape: Tuple[int, ...],
+    ) -> WellCenterRefinement:
+        """
+        Compute one bounded local centroid from colored liquid pixels near the assigned center.
+        """
+
+        original_center = well.center
+        image_height, image_width = image_shape[:2]
+        search_radius = max(
+            well.sample_radius + 3,
+            int(round(max(well.source_radius, well.sample_radius) * WELL_DETECTION.local_refine_window_scale)),
+        )
+        max_shift = max(
+            2,
+            int(round(max(well.source_radius, well.sample_radius) * WELL_DETECTION.local_refine_max_shift_scale)),
+        )
+
+        x1 = max(0, original_center[0] - search_radius)
+        y1 = max(0, original_center[1] - search_radius)
+        x2 = min(image_width, original_center[0] + search_radius + 1)
+        y2 = min(image_height, original_center[1] + search_radius + 1)
+        if x2 <= x1 or y2 <= y1:
+            return WellCenterRefinement(
+                original_center=original_center,
+                refined_center=original_center,
+                refined=False,
+                reason="empty_patch",
+            )
+
+        patch_hsv = hsv_image[y1:y2, x1:x2]
+        local_center = (original_center[0] - x1, original_center[1] - y1)
+        saturation = patch_hsv[:, :, 1]
+        value = patch_hsv[:, :, 2]
+        color_mask = np.zeros(patch_hsv.shape[:2], dtype=np.uint8)
+        color_mask[
+            (saturation >= WELL_DETECTION.local_refine_saturation_min)
+            & (value >= WELL_DETECTION.local_refine_value_min)
+        ] = 255
+        color_mask = cv2.morphologyEx(
+            color_mask,
+            cv2.MORPH_OPEN,
+            np.ones((3, 3), dtype=np.uint8),
+        )
+
+        component_count, labels, stats, centroids = cv2.connectedComponentsWithStats(color_mask, connectivity=8)
+        if component_count <= 1:
+            return WellCenterRefinement(
+                original_center=original_center,
+                refined_center=original_center,
+                refined=False,
+                reason="no_color_mask",
+            )
+
+        min_area = max(
+            6,
+            int(round(math.pi * well.sample_radius * well.sample_radius * WELL_DETECTION.local_refine_min_area_scale)),
+        )
+        best_label: Optional[int] = None
+        best_distance = float("inf")
+        best_area = 0
+        for label in range(1, component_count):
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            if area < min_area:
+                continue
+
+            centroid = centroids[label]
+            distance = math.dist((float(centroid[0]), float(centroid[1])), local_center)
+            if distance > search_radius:
+                continue
+
+            if distance < best_distance or (math.isclose(distance, best_distance) and area > best_area):
+                best_label = label
+                best_distance = distance
+                best_area = area
+
+        if best_label is None:
+            return WellCenterRefinement(
+                original_center=original_center,
+                refined_center=original_center,
+                refined=False,
+                reason="no_valid_component",
+            )
+
+        selected_mask = np.zeros_like(color_mask)
+        selected_mask[labels == best_label] = 255
+        moments = cv2.moments(selected_mask)
+        if moments["m00"] <= 0:
+            return WellCenterRefinement(
+                original_center=original_center,
+                refined_center=original_center,
+                refined=False,
+                reason="zero_moments",
+                mask_area=best_area,
+            )
+
+        refined_local_x = float(moments["m10"] / moments["m00"])
+        refined_local_y = float(moments["m01"] / moments["m00"])
+        dx = refined_local_x - local_center[0]
+        dy = refined_local_y - local_center[1]
+        shift_distance = math.hypot(dx, dy)
+        if shift_distance > max_shift:
+            scale = max_shift / max(shift_distance, 1e-6)
+            dx *= scale
+            dy *= scale
+
+        refined_center = (
+            int(round(np.clip(original_center[0] + dx, 0, image_width - 1))),
+            int(round(np.clip(original_center[1] + dy, 0, image_height - 1))),
+        )
+        if refined_center == original_center:
+            return WellCenterRefinement(
+                original_center=original_center,
+                refined_center=original_center,
+                refined=False,
+                reason="no_effective_shift",
+                mask_area=best_area,
+            )
+
+        return WellCenterRefinement(
+            original_center=original_center,
+            refined_center=refined_center,
+            refined=True,
+            reason="refined",
+            mask_area=best_area,
+        )
 
     @staticmethod
     def _regularize_axis_positions(axis_positions: List[float]) -> List[float]:

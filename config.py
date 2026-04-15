@@ -152,6 +152,11 @@ class WellDetectionConfig:
     max_assignment_error_scale: float = 0.72
     sample_radius_scale: float = 0.42
     visualization_radius_scale: float = 0.88
+    local_refine_window_scale: float = 1.35
+    local_refine_max_shift_scale: float = 0.6
+    local_refine_saturation_min: int = 28
+    local_refine_value_min: int = 25
+    local_refine_min_area_scale: float = 0.18
 
 
 @dataclass(frozen=True)
