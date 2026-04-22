@@ -4,20 +4,24 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import cv2
 import numpy as np
 
 from color_profiles import COLOR_PROFILES, COLOR_PROFILE_BY_NAME
 import db_handler
+import live_stream_server
 from config import MONGO, PLATE_GEOMETRY
 from main import (
     CalibrationError,
+    build_backend_gene_results_documents,
+    build_backend_mongo_document,
     build_mapped_results_documents,
     build_mapped_mongo_document,
     build_mongo_document,
@@ -225,21 +229,21 @@ class PayloadTests(unittest.TestCase):
             [
                 {
                     "gene": "K",
-                    "allele": "c.1699G>A",
+                    "allele": ["c.1699G>A"],
                     "rsId": "rs1803274",
                     "assayId": "C__27479669_20",
                     "wellNum": 1,
                 },
                 {
                     "gene": "BCHE",
-                    "allele": "c.293A>G",
+                    "allele": ["c.293A>G"],
                     "rsId": "rs1799807",
                     "assayId": "C___2411904_20",
                     "wellNum": "3",
                 },
                 {
                     "gene": "CYP2B6",
-                    "allele": "*18",
+                    "allele": ["*18"],
                     "rsId": "rs28399499",
                     "assayId": "C___7817765_C0",
                     "wellNum": "bad",
@@ -255,6 +259,49 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(mapped_documents[1]["present"], 1)
         self.assertEqual(mapped_documents[2]["gene"], "CYP2B6")
         self.assertEqual(mapped_documents[2]["present"], 0)
+
+    def test_build_backend_gene_results_documents_preserves_duplicate_gene_rows_and_uses_backend_fields(self) -> None:
+        gene_documents = build_backend_gene_results_documents(
+            [
+                {
+                    "gene": "CYP2C19",
+                    "allele": ["*2"],
+                    "wellNum": 1,
+                },
+                {
+                    "gene": "CYP2C19",
+                    "allele": ["*17"],
+                    "wellNum": 2,
+                },
+                {
+                    "gene": "BCHE",
+                    "allele": ["c.293A>G"],
+                    "wellNum": "bad",
+                },
+            ],
+            [1, 0] + ([0] * 94),
+        )
+
+        self.assertEqual(
+            gene_documents,
+            [
+                {
+                    "geneName": "CYP2C19",
+                    "genotypes": ["*2"],
+                    "testResult": "yellow",
+                },
+                {
+                    "geneName": "CYP2C19",
+                    "genotypes": ["*17"],
+                    "testResult": "red",
+                },
+                {
+                    "geneName": "BCHE",
+                    "genotypes": ["c.293A>G"],
+                    "testResult": "red",
+                },
+            ],
+        )
 
     def test_to_json_safe_stringifies_non_json_types_for_mapped_export(self) -> None:
         class FakeObjectId:
@@ -306,13 +353,42 @@ class PayloadTests(unittest.TestCase):
         self.assertEqual(len(document["results"]), 2)
         self.assertEqual(document["results"][0]["present"], 1)
 
+    def test_backend_mongo_document_contains_grouped_genes_array(self) -> None:
+        document = build_backend_mongo_document(
+            plate_id="plate-2",
+            timestamp="2026-03-24T00:00:00+00:00",
+            gene_results_documents=[
+                {
+                    "geneName": "CYP2C19",
+                    "genotypes": ["*2"],
+                    "testResult": "yellow",
+                },
+                {
+                    "geneName": "CYP2C19",
+                    "genotypes": ["*17"],
+                    "testResult": "red",
+                },
+                {
+                    "geneName": "BCHE",
+                    "genotypes": ["c.293A>G"],
+                    "testResult": "red",
+                },
+            ],
+        )
+
+        self.assertEqual(sorted(document.keys()), ["genes", "plateId", "timestamp"])
+        self.assertEqual(document["plateId"], "plate-2")
+        self.assertEqual(len(document["genes"]), 3)
+        self.assertEqual(document["genes"][0]["geneName"], "CYP2C19")
+        self.assertEqual(document["genes"][0]["testResult"], "yellow")
+
     def test_test_payload_matches_requested_shape(self) -> None:
         payload = db_handler.build_test_payload()
         self.assertEqual(payload["plateId"], "test_plate_001")
         self.assertEqual(payload["binaryData"], [0, 1, 0, 1, 0, 1, 0, 1])
         self.assertIn("timestamp", payload)
 
-    def test_mongodb_upload_receives_mapped_results_document(self) -> None:
+    def test_mongodb_upload_receives_backend_gene_document(self) -> None:
         inserted_documents = []
 
         class FakeCollection:
@@ -341,9 +417,9 @@ class PayloadTests(unittest.TestCase):
         payload = {
             "plateId": "plate-3",
             "timestamp": "2026-03-24T00:00:00+00:00",
-            "results": [
-                {"gene": "K", "wellNum": 7, "present": 1},
-                {"gene": "BCHE", "wellNum": 3, "present": 0},
+            "genes": [
+                {"geneName": "K", "genotypes": ["c.1699G>A"], "testResult": "yellow"},
+                {"geneName": "BCHE", "genotypes": ["c.293A>G"], "testResult": "red"},
             ],
         }
 
@@ -352,9 +428,9 @@ class PayloadTests(unittest.TestCase):
 
         self.assertEqual(inserted_id, "fake-id")
         self.assertEqual(len(inserted_documents), 1)
-        self.assertEqual(inserted_documents[0]["results"][0]["gene"], "K")
-        self.assertEqual(inserted_documents[0]["results"][1]["present"], 0)
-        self.assertEqual(sorted(inserted_documents[0].keys()), ["plateId", "results", "timestamp"])
+        self.assertEqual(inserted_documents[0]["genes"][0]["geneName"], "K")
+        self.assertEqual(inserted_documents[0]["genes"][1]["testResult"], "red")
+        self.assertEqual(sorted(inserted_documents[0].keys()), ["genes", "plateId", "timestamp"])
 
     def test_mongodb_upload_skips_when_no_uri_is_configured(self) -> None:
         with patch.dict("os.environ", {}, clear=True), patch.object(db_handler, "load_local_env", return_value=None):
@@ -368,6 +444,114 @@ class PayloadTests(unittest.TestCase):
             )
 
         self.assertIsNone(inserted_id)
+
+
+class LiveStreamServerTests(unittest.TestCase):
+    def test_load_backend_results_payload_returns_file_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "run_20260420T120000"
+            run_dir.mkdir()
+            payload = {
+                "plateId": "run_20260420T120000",
+                "timestamp": "2026-04-20T12:00:00Z",
+                "genes": [
+                    {
+                        "geneName": "K",
+                        "genotypes": ["c.1699G>A"],
+                        "testResult": "yellow",
+                    },
+                    {
+                        "geneName": "BCHE",
+                        "genotypes": ["c.293A>G"],
+                        "testResult": "red",
+                    },
+                ]
+            }
+            (run_dir / "backend_results.json").write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+
+            loaded_payload = live_stream_server.load_backend_results_payload(run_dir)
+
+        self.assertEqual(loaded_payload, payload)
+
+    def test_load_backend_results_payload_returns_none_for_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_dir = Path(temp_dir) / "run_20260420T120000"
+            run_dir.mkdir()
+
+            loaded_payload = live_stream_server.load_backend_results_payload(run_dir)
+
+        self.assertIsNone(loaded_payload)
+
+    def test_find_newest_run_directory_returns_new_run_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            existing_run_dir = output_dir / "run_20260420T120000"
+            new_run_dir = output_dir / "run_20260420T120100"
+            existing_run_dir.mkdir()
+            time.sleep(0.01)
+            new_run_dir.mkdir()
+
+            with patch.object(live_stream_server, "OUTPUT_DIR", output_dir):
+                newest_run_dir = live_stream_server.find_newest_run_directory({existing_run_dir})
+
+        self.assertEqual(newest_run_dir, new_run_dir)
+
+    def test_find_newest_run_directory_returns_none_when_no_new_run_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            existing_run_dir = output_dir / "run_20260420T120000"
+            existing_run_dir.mkdir()
+
+            with patch.object(live_stream_server, "OUTPUT_DIR", output_dir):
+                newest_run_dir = live_stream_server.find_newest_run_directory({existing_run_dir})
+
+        self.assertIsNone(newest_run_dir)
+
+
+class LiveStreamServerSessionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_send_latest_backend_results_adds_analysis_complete_type(self) -> None:
+        coordinator = live_stream_server.SessionCoordinator(camera_index=0)
+        session = live_stream_server.ActiveSession(websocket=AsyncMock(), camera_index=0)
+        run_dir = Path("/tmp/run_20260420T120000")
+        payload = {
+            "plateId": "run_20260420T120000",
+            "timestamp": "2026-04-20T12:00:00Z",
+            "genes": [
+                {
+                    "geneName": "K",
+                    "genotypes": ["c.1699G>A"],
+                    "testResult": "yellow",
+                }
+            ],
+        }
+
+        with patch.object(live_stream_server, "find_newest_run_directory", return_value=run_dir), patch.object(
+            live_stream_server,
+            "load_backend_results_payload",
+            return_value=payload,
+        ), patch.object(coordinator, "_send_json", new_callable=AsyncMock) as mock_send_json:
+            await coordinator._send_latest_backend_results(session, existing_run_dirs=set())
+
+        mock_send_json.assert_awaited_once_with(
+            session.websocket,
+            {
+                "type": "analysis_complete",
+                "plateId": "run_20260420T120000",
+                "timestamp": "2026-04-20T12:00:00Z",
+                "genes": [
+                    {
+                        "geneName": "K",
+                        "genotypes": ["c.1699G>A"],
+                        "testResult": "yellow",
+                    }
+                ],
+            },
+            session=session,
+        )
+        self.assertNotIn("type", payload)
 
 
 class CalibrationTests(unittest.TestCase):

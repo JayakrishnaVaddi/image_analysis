@@ -395,6 +395,40 @@ def build_mapped_mongo_document(
     }
 
 
+def _normalize_genotypes(raw_allele: Any) -> list[str]:
+    """
+    Normalize one source `allele` field into the backend's genotype array.
+
+    Source mock-plate records may already store allele as an array. If a legacy
+    single string slips through, keep the run moving by wrapping it into a
+    one-item array instead of failing the full export.
+    """
+
+    if raw_allele is None:
+        return []
+    if isinstance(raw_allele, (list, tuple)):
+        return [
+            str(item).strip()
+            for item in raw_allele
+            if str(item).strip()
+        ]
+
+    allele = str(raw_allele).strip()
+    return [allele] if allele else []
+
+
+def _binary_value_to_test_result(value: int) -> str:
+    """
+    Convert the current 0/1 gene readout into the backend's color enum.
+
+    The existing pipeline defines gene-present as `1`, and README/color-profile
+    docs currently map that state to yellow. Missing/negative/fallback values
+    remain red so the run can continue safely when mapping metadata is invalid.
+    """
+
+    return "yellow" if int(value) == 1 else "red"
+
+
 def build_mapped_results_documents(source_documents: list[Dict[str, Any]], binary_data: list[int]) -> list[Dict[str, Any]]:
     """
     Copy source mock-plate records and append `present` from the current run.
@@ -421,6 +455,72 @@ def build_mapped_results_documents(source_documents: list[Dict[str, Any]], binar
         mapped_documents.append(mapped_document)
 
     return mapped_documents
+
+
+def build_backend_gene_results_documents(
+    source_documents: list[Dict[str, Any]],
+    binary_data: list[int],
+) -> list[Dict[str, Any]]:
+    """
+    Build the backend-facing gene payload with one entry per mapped source row.
+
+    This is intentionally derived from the same source documents used for
+    `mapped_results.json` so the backend receives exactly
+    the required schema:
+    `{"geneName", "genotypes", "testResult"}`.
+
+    Logic is inserted after final binary results are known, which preserves the
+    existing well numbering and analysis ordering. If a row has an invalid
+    `wellNum`, it falls back to `testResult="red"` and the rest of the run
+    continues unchanged. Duplicate gene names are preserved intentionally so
+    allele-specific rows remain distinguishable in the backend payload.
+    """
+
+    gene_documents: list[Dict[str, Any]] = []
+
+    for source_document in source_documents:
+        gene_name = str(source_document.get("gene") or "").strip()
+        if not gene_name:
+            continue
+
+        raw_well_num = source_document.get("wellNum")
+        try:
+            well_num = int(raw_well_num)
+        except (TypeError, ValueError):
+            well_num = None
+
+        binary_value = 0
+        if well_num is not None and 1 <= well_num <= len(binary_data):
+            binary_value = int(binary_data[well_num - 1])
+
+        test_result = _binary_value_to_test_result(binary_value)
+        genotypes = _normalize_genotypes(source_document.get("allele"))
+
+        gene_documents.append(
+            {
+                "geneName": gene_name,
+                "genotypes": genotypes,
+                "testResult": test_result,
+            }
+        )
+
+    return gene_documents
+
+
+def build_backend_mongo_document(
+    plate_id: str,
+    timestamp: str,
+    gene_results_documents: list[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Build the exact backend-facing MongoDB document shape for one run.
+    """
+
+    return {
+        "plateId": plate_id,
+        "timestamp": timestamp,
+        "genes": gene_results_documents,
+    }
 
 
 def validate_binary_data(binary_data: Any) -> list[int]:
@@ -558,6 +658,7 @@ def run_analysis(
     saved_files = save_artifacts(run_dir, original_image, undistorted_image, analysis_result)
     json_output_path = run_dir / "results.json"
     mapped_output_path = run_dir / "mapped_results.json"
+    backend_output_path = run_dir / "backend_results.json"
     final_plate_id = plate_id or run_id
     run_document = build_run_document(final_plate_id, timestamp, analysis_result)
 
@@ -575,11 +676,28 @@ def run_analysis(
     else:
         LOGGER.warning("No mock-plate documents were fetched; skipping mapped_results.json")
 
-    mongo_document = build_mapped_mongo_document(
-        final_plate_id,
-        timestamp,
-        mapped_results_documents,
+    backend_gene_results_documents = build_backend_gene_results_documents(
+        mock_plate_documents,
+        run_document["binaryData"],
     )
+    if backend_gene_results_documents:
+        backend_document = build_backend_mongo_document(
+            final_plate_id,
+            timestamp,
+            backend_gene_results_documents,
+        )
+        save_json(backend_output_path, backend_document)
+        LOGGER.info("Saved backend gene results to %s", backend_output_path)
+    else:
+        backend_document = build_backend_mongo_document(
+            final_plate_id,
+            timestamp,
+            [],
+        )
+        LOGGER.warning("No backend gene results were generated; saving empty backend_results.json")
+        save_json(backend_output_path, backend_document)
+
+    mongo_document = backend_document
     mongo_inserted_id = upload_run_document(mongo_document, args.mongo_uri)
 
     if display:
@@ -595,6 +713,7 @@ def run_analysis(
         "saved_files": saved_files,
         "mongo_inserted_id": mongo_inserted_id,
         "mapped_results_path": str(mapped_output_path) if mapped_results_documents else None,
+        "backend_results_path": str(backend_output_path),
     }
 
 

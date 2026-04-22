@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from camera_capture import CameraCaptureError, iter_live_frames
+from config import OUTPUT
 from hardware_control import HardwareController
 
 try:
@@ -34,12 +35,74 @@ except ImportError as exc:  # pragma: no cover - depends on local environment.
 LOGGER = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parent
 MAIN_SCRIPT_PATH = REPO_ROOT / "main.py"
+OUTPUT_DIR = REPO_ROOT / OUTPUT.output_dir
 STREAM_PATH = "/stream"
-SESSION_DURATION_SECONDS = 600
+SESSION_DURATION_SECONDS = 60
 TEMPERATURE_INTERVAL_SECONDS = 1.0
 TARGET_TEMPERATURE_C = 105.0
 HEATER_ON_BELOW_C = 104.0
 HEATER_OFF_ABOVE_C = 106.0
+
+
+def list_run_directories() -> set[Path]:
+    """
+    Return the current analysis run directories under the configured output root.
+
+    This stays aligned with the existing output layout used by `main.py` so the
+    live server can discover the run created by the analysis subprocess without
+    changing the analysis CLI contract.
+    """
+
+    if not OUTPUT_DIR.exists():
+        return set()
+
+    return {
+        path
+        for path in OUTPUT_DIR.iterdir()
+        if path.is_dir() and path.name.startswith(OUTPUT.run_directory_prefix)
+    }
+
+
+def load_backend_results_payload(run_dir: Path) -> Optional[dict]:
+    """
+    Load one run's backend-results payload for websocket delivery.
+
+    The payload is sent in the same top-level shape as `backend_results.json`.
+    If the file is missing or malformed, the live session falls back to the
+    prior behavior of completing without a backend-results push.
+    """
+
+    backend_results_path = run_dir / "backend_results.json"
+    if not backend_results_path.exists():
+        return None
+
+    try:
+        with backend_results_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        LOGGER.exception("Failed to read backend results from %s", backend_results_path)
+        return None
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("genes"), list):
+        LOGGER.warning("Backend results payload at %s has unexpected shape", backend_results_path)
+        return None
+
+    return payload
+
+
+def find_newest_run_directory(existing_run_dirs: set[Path]) -> Optional[Path]:
+    """
+    Return the newest run directory created after an analysis subprocess starts.
+
+    If no new directory was created, this returns `None` so the live server can
+    keep the previous success path without failing the whole session.
+    """
+
+    new_run_dirs = list(list_run_directories() - existing_run_dirs)
+    if not new_run_dirs:
+        return None
+
+    return max(new_run_dirs, key=lambda path: path.stat().st_mtime)
 
 
 @dataclass
@@ -389,7 +452,7 @@ class SessionCoordinator:
                 )
                 session.analysis_in_progress = True
                 try:
-                    await self._launch_analysis_subprocess(session.camera_index)
+                    await self._launch_analysis_subprocess(session)
                 finally:
                     session.analysis_in_progress = False
             else:
@@ -455,14 +518,15 @@ class SessionCoordinator:
         except Exception:
             LOGGER.exception("Failed to send video frame to client")
 
-    async def _launch_analysis_subprocess(self, camera_index: int) -> None:
+    async def _launch_analysis_subprocess(self, session: ActiveSession) -> None:
+        existing_run_dirs = list_run_directories()
         command = [
             sys.executable,
             str(MAIN_SCRIPT_PATH),
             "--mode",
             "live",
             "--camera-index",
-            str(camera_index),
+            str(session.camera_index),
         ]
         LOGGER.info("Launching analysis command: %s", " ".join(command))
 
@@ -479,8 +543,43 @@ class SessionCoordinator:
         return_code = await process.wait()
         if return_code == 0:
             LOGGER.info("Analysis subprocess completed successfully")
+            await self._send_latest_backend_results(session, existing_run_dirs)
         else:
             LOGGER.error("Analysis subprocess exited with code %s", return_code)
+
+    async def _send_latest_backend_results(
+        self,
+        session: ActiveSession,
+        existing_run_dirs: set[Path],
+    ) -> None:
+        """
+        Send the backend-results payload for the run created by the last analysis.
+
+        This is intentionally isolated to the live websocket flow so CLI image
+        analysis, persistence, and local artifact generation remain unchanged.
+        If discovery or loading fails, the session simply skips this extra
+        websocket message and preserves the previous behavior.
+        """
+
+        run_dir = find_newest_run_directory(existing_run_dirs)
+        if run_dir is None:
+            LOGGER.warning("Analysis finished but no new run directory was found for backend-results handoff")
+            return
+
+        payload = load_backend_results_payload(run_dir)
+        if payload is None:
+            LOGGER.info("No backend_results.json payload available for run %s", run_dir.name)
+            return
+
+        completion_payload = dict(payload)
+        completion_payload["type"] = "analysis_complete"
+
+        await self._send_json(session.websocket, completion_payload, session=session)
+        LOGGER.info(
+            "Sent backend results for run %s to websocket client (%s records)",
+            run_dir.name,
+            len(payload["genes"]),
+        )
 
 async def client_handler(websocket: ServerConnection, coordinator: SessionCoordinator) -> None:
     """

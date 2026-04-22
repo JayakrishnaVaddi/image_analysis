@@ -11,6 +11,10 @@ const testStateEl = document.getElementById("testState");
 const temperatureValueEl = document.getElementById("temperatureValue");
 const imageEl = document.getElementById("streamImage");
 const placeholderEl = document.getElementById("placeholder");
+const resultsSummaryEl = document.getElementById("resultsSummary");
+const resultsEmptyStateEl = document.getElementById("resultsEmptyState");
+const resultsTableWrapperEl = document.getElementById("resultsTableWrapper");
+const resultsTableBodyEl = document.getElementById("resultsTableBody");
 
 let socket = null;
 let currentObjectUrl = null;
@@ -20,6 +24,7 @@ let testRunning = false;
 let heaterEnabled = false;
 let isConnecting = false;
 let isStopping = false;
+let latestBackendResults = null;
 
 function hasRequiredUi() {
   return Boolean(
@@ -32,7 +37,11 @@ function hasRequiredUi() {
       testStateEl &&
       temperatureValueEl &&
       imageEl &&
-      placeholderEl,
+      placeholderEl &&
+      resultsSummaryEl &&
+      resultsEmptyStateEl &&
+      resultsTableWrapperEl &&
+      resultsTableBodyEl,
   );
 }
 
@@ -111,6 +120,52 @@ function clearStreamView() {
   placeholderEl.hidden = false;
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function normalizeGenotypes(genotypes) {
+  if (!Array.isArray(genotypes) || genotypes.length === 0) {
+    return "—";
+  }
+  return genotypes.join(", ");
+}
+
+function clearBackendResults(summary = "No backend results received yet.") {
+  latestBackendResults = null;
+  window.latestBackendResults = null;
+  resultsSummaryEl.textContent = summary;
+  resultsTableBodyEl.innerHTML = "";
+  resultsTableWrapperEl.hidden = true;
+  resultsEmptyStateEl.hidden = false;
+}
+
+function renderBackendResults(payload) {
+  const genes = Array.isArray(payload.genes) ? payload.genes : [];
+  const rows = genes.map((geneRow) => {
+    const geneName = geneRow && geneRow.geneName ? geneRow.geneName : "—";
+    const genotypeText = normalizeGenotypes(geneRow && geneRow.genotypes);
+    const testResult = geneRow && geneRow.testResult ? String(geneRow.testResult) : "unknown";
+    return `
+      <tr>
+        <td>${escapeHtml(geneName)}</td>
+        <td>${escapeHtml(genotypeText)}</td>
+        <td><span class="result-pill" data-result="${escapeHtml(testResult.toLowerCase())}">${escapeHtml(testResult)}</span></td>
+      </tr>
+    `;
+  });
+
+  resultsTableBodyEl.innerHTML = rows.join("");
+  resultsSummaryEl.textContent = `${payload.plateId || "Unknown plate"} • ${genes.length} gene result${genes.length === 1 ? "" : "s"}`;
+  resultsEmptyStateEl.hidden = genes.length > 0;
+  resultsTableWrapperEl.hidden = genes.length === 0;
+}
+
 function updateButtonState() {
   startDeviceButton.disabled = deviceActive || isConnecting || isStopping;
   runTestButton.disabled = !deviceActive || testRunning || isConnecting || isStopping;
@@ -124,6 +179,7 @@ function resetUiToIdle(statusMessage = "Idle", statusState = "pending") {
   isConnecting = false;
   isStopping = false;
   clearStreamView();
+  clearBackendResults();
   setTemperatureValue("--.- C");
   setSessionState("Idle");
   setTestState("Idle");
@@ -294,6 +350,7 @@ function handleJsonMessage(rawPayload) {
       testRunning = true;
       isStopping = false;
       clearStreamView();
+      clearBackendResults("Processing started. Waiting for backend results...");
       setStatus(`Test running for ${payload.durationSeconds} seconds.`, "ok");
       setTestState("Running");
       updateButtonState();
@@ -348,12 +405,22 @@ function handleJsonMessage(rawPayload) {
       setSessionState(`Stopped: ${payload.reason}`);
       return;
     default:
-      return;
+      break;
+  }
+
+  if (payload && typeof payload === "object" && Array.isArray(payload.genes)) {
+    latestBackendResults = payload;
+    window.latestBackendResults = payload;
+    logClient("Received backend results payload", payload);
+    renderBackendResults(payload);
+    setStatus(`Backend results received for ${payload.plateId || "latest run"}.`, "ok");
+    setTestState(`Results ready (${payload.genes.length} records)`);
   }
 }
 
 wsUrlInput.value = defaultWebSocketUrl();
 resetUiToIdle();
+window.latestBackendResults = latestBackendResults;
 logClient("Test webapp initialized.");
 
 startDeviceButton.addEventListener("click", () => {

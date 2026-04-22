@@ -50,6 +50,33 @@
           <img id="streamImage" alt="Live Raspberry Pi camera stream" />
           <div id="placeholder" class="placeholder">No stream yet</div>
         </div>
+
+        <section class="results-panel" aria-labelledby="resultsHeading">
+          <div class="results-header">
+            <div>
+              <p class="eyebrow">Analysis Output</p>
+              <h2 id="resultsHeading">Backend Results</h2>
+            </div>
+            <p id="resultsSummary" class="results-summary">No backend results received yet.</p>
+          </div>
+
+          <div id="resultsEmptyState" class="results-empty">
+            Run a test and wait for processing to finish to view backend results here.
+          </div>
+
+          <div id="resultsTableWrapper" class="results-table-wrapper" hidden>
+            <table class="results-table">
+              <thead>
+                <tr>
+                  <th scope="col">Gene</th>
+                  <th scope="col">Genotypes</th>
+                  <th scope="col">Result</th>
+                </tr>
+              </thead>
+              <tbody id="resultsTableBody"></tbody>
+            </table>
+          </div>
+        </section>
       </section>
     </main>
 
