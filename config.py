@@ -204,8 +204,8 @@ class MongoConfig:
     source_collection_name_env_var: str = "MONGO_SOURCE_COLLECTION_NAME"
     database_name: str = "image_analysis"
     collection_name: str = "well_plate_results"
-    source_database_name: str = "mock-db"
-    source_collection_name: str = "mock-plate"
+    source_database_name: str = "Gene_set"
+    source_collection_name: str = "Gene_panel"
     server_selection_timeout_ms: int = 3000
 
 

@@ -145,7 +145,7 @@ def to_json_safe(value: Any) -> Any:
     """
     Convert nested values into JSON-safe equivalents for mapped Mongo output.
 
-    This is used only for the mock-plate export path so BSON-native values such
+    This is used only for the gene panel export path so BSON-native values such
     as `ObjectId` do not break local JSON saving. Unknown non-JSON types fall
     back to `str(value)` instead of stopping the full run.
     """
@@ -382,7 +382,7 @@ def build_mapped_mongo_document(
     mapped_results_documents: list[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """
-    Build the MongoDB payload that stores mapped mock-plate results.
+    Build the MongoDB payload that stores mapped gene panel results.
 
     This keeps `plate_results` aligned with the richer mapped-results output
     while preserving the existing local `results.json` file on disk.
@@ -399,7 +399,7 @@ def _normalize_genotypes(raw_allele: Any) -> list[str]:
     """
     Normalize one source `allele` field into the backend's genotype array.
 
-    Source mock-plate records may already store allele as an array. If a legacy
+    Source gene panel records may already store allele as an array. If a legacy
     single string slips through, keep the run moving by wrapping it into a
     one-item array instead of failing the full export.
     """
@@ -431,7 +431,7 @@ def _binary_value_to_test_result(value: int) -> str:
 
 def build_mapped_results_documents(source_documents: list[Dict[str, Any]], binary_data: list[int]) -> list[Dict[str, Any]]:
     """
-    Copy source mock-plate records and append `present` from the current run.
+    Copy source gene panel records and append `present` from the current run.
 
     This is intentionally inserted after `binaryData` has been finalized, so it
     inherits the existing well numbering and ordering without changing the
@@ -672,9 +672,9 @@ def run_analysis(
     )
     if mapped_results_documents:
         save_json(mapped_output_path, {"results": mapped_results_documents})
-        LOGGER.info("Saved mapped mock-plate results to %s", mapped_output_path)
+        LOGGER.info("Saved mapped gene panel results to %s", mapped_output_path)
     else:
-        LOGGER.warning("No mock-plate documents were fetched; skipping mapped_results.json")
+        LOGGER.warning("No gene panel documents were fetched; skipping mapped_results.json")
 
     backend_gene_results_documents = build_backend_gene_results_documents(
         mock_plate_documents,

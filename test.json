@@ -1,0 +1,18 @@
+{
+"gene": "K",
+"genotype": "c.1699G>A",
+"rsId": "rs1803274",
+"wellNum": 7,
+"Phenotype" : "Decreased Function",
+"Recommendations" : {
+    "drugs": [
+    {
+      "drug_name": "allopurinol",
+      "dpwg_recommendation": "<p>Use 1.25 times the standard dose.<br />\nThis equates to a dose titration schedule of 100, 200, 400 and 500 mg/day instead of the usual schedule of 100, 200, 300 and 400 mg/day.</p>\n"
+    }
+  ],
+  "therapeutic_area": "MUSCULO-SKELETAL SYSTEM DRUGS"
+},
+"present": 0
+}
+

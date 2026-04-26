@@ -85,7 +85,7 @@ def resolve_collection_name() -> str:
 
 def resolve_source_database_name() -> str:
     """
-    Resolve the MongoDB source database for the mock plate records.
+    Resolve the MongoDB source database for the gene panel records.
     """
 
     load_local_env()
@@ -94,7 +94,7 @@ def resolve_source_database_name() -> str:
 
 def resolve_source_collection_name() -> str:
     """
-    Resolve the MongoDB source collection for the mock plate records.
+    Resolve the MongoDB source collection for the gene panel records.
     """
 
     load_local_env()
@@ -168,7 +168,7 @@ def upload_run_document(document: Dict[str, Any], mongo_uri: Optional[str]) -> O
 
 def fetch_mock_plate_documents(mongo_uri: Optional[str]) -> List[Dict[str, Any]]:
     """
-    Read mock plate seed documents from MongoDB without modifying them.
+    Read gene panel seed documents from MongoDB without modifying them.
 
     Returns an empty list on connection/read failure so the image-analysis run
     can still complete with its original outputs.
@@ -188,14 +188,14 @@ def fetch_mock_plate_documents(mongo_uri: Optional[str]) -> List[Dict[str, Any]]
         client.admin.command("ping")
         documents = list(collection.find())
         LOGGER.info(
-            "Loaded %s mock-plate documents from %s.%s",
+            "Loaded %s gene panel documents from %s.%s",
             len(documents),
             database_name,
             collection_name,
         )
         return documents
     except PyMongoError as exc:
-        LOGGER.error("MongoDB mock-plate read failed: %s", exc)
+        LOGGER.error("MongoDB gene panel read failed: %s", exc)
         return []
     finally:
         client.close()
