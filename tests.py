@@ -265,7 +265,7 @@ class PayloadTests(unittest.TestCase):
             [
                 {
                     "gene": "CYP2C19",
-                    "allele": ["*2"],
+                    "genotype": "*2/*2",
                     "wellNum": 1,
                 },
                 {
@@ -287,7 +287,7 @@ class PayloadTests(unittest.TestCase):
             [
                 {
                     "geneName": "CYP2C19",
-                    "genotypes": ["*2"],
+                    "genotypes": "*2/*2",
                     "testResult": "yellow",
                 },
                 {

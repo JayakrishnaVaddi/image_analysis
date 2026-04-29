@@ -395,15 +395,22 @@ def build_mapped_mongo_document(
     }
 
 
-def _normalize_genotypes(raw_allele: Any) -> list[str]:
+def _resolve_source_genotypes(source_document: Dict[str, Any]) -> Any:
     """
-    Normalize one source `allele` field into the backend's genotype array.
+    Resolve the backend genotype value from one Gene_panel source document.
 
-    Source gene panel records may already store allele as an array. If a legacy
-    single string slips through, keep the run moving by wrapping it into a
-    one-item array instead of failing the full export.
+    Current Gene_panel records store the desired value in `genotype`, so keep
+    that value unchanged instead of wrapping it in an array. Legacy records may
+    still use `genotypes` or `allele`; those are preserved as safe fallbacks so
+    old mock/source data can still export without stopping the run.
     """
 
+    if "genotype" in source_document:
+        return to_json_safe(source_document.get("genotype"))
+    if "genotypes" in source_document:
+        return to_json_safe(source_document.get("genotypes"))
+
+    raw_allele = source_document.get("allele")
     if raw_allele is None:
         return []
     if isinstance(raw_allele, (list, tuple)):
@@ -494,7 +501,7 @@ def build_backend_gene_results_documents(
             binary_value = int(binary_data[well_num - 1])
 
         test_result = _binary_value_to_test_result(binary_value)
-        genotypes = _normalize_genotypes(source_document.get("allele"))
+        genotypes = _resolve_source_genotypes(source_document)
 
         gene_documents.append(
             {
