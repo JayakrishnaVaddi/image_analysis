@@ -512,6 +512,32 @@ class LiveStreamServerTests(unittest.TestCase):
 
 
 class LiveStreamServerSessionCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_device_session_turns_leds_on_and_off_with_device(self) -> None:
+        coordinator = live_stream_server.SessionCoordinator(camera_index=0)
+        session = live_stream_server.ActiveSession(websocket=AsyncMock(), camera_index=0)
+
+        async def stop_temperature_task(active_session):
+            active_session.device_stop_event.set()
+
+        async def run_thread_call_synchronously(func, *args):
+            return func(*args)
+
+        with patch.object(coordinator, "_send_json", new_callable=AsyncMock), patch.object(
+            coordinator, "_run_temperature_control", side_effect=stop_temperature_task
+        ), patch.object(
+            live_stream_server.asyncio, "to_thread", side_effect=run_thread_call_synchronously
+        ), patch.object(
+            coordinator._hardware, "turn_leds_on", return_value=True
+        ) as mock_leds_on, patch.object(
+            coordinator._hardware, "turn_leds_off", return_value=True
+        ) as mock_leds_off, patch.object(
+            coordinator._hardware, "turn_heater_off", return_value=True
+        ):
+            await coordinator._run_device_session(session)
+
+        mock_leds_on.assert_called_once_with()
+        mock_leds_off.assert_called_once_with()
+
     async def test_send_latest_backend_results_adds_analysis_complete_type(self) -> None:
         coordinator = live_stream_server.SessionCoordinator(camera_index=0)
         session = live_stream_server.ActiveSession(websocket=AsyncMock(), camera_index=0)

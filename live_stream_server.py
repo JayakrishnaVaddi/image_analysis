@@ -42,6 +42,7 @@ TEMPERATURE_INTERVAL_SECONDS = 1.0
 TARGET_TEMPERATURE_C = 105.0
 HEATER_ON_BELOW_C = 104.0
 HEATER_OFF_ABOVE_C = 106.0
+LED_OFF_DELAY_SECONDS = 5.0
 
 
 def list_run_directories() -> set[Path]:
@@ -119,6 +120,7 @@ class ActiveSession:
     test_end_reason: Optional[str] = None
     error_message: Optional[str] = None
     heater_enabled: bool = False
+    led_enabled: bool = False
     target_reached: bool = False
     test_active: bool = False
     analysis_in_progress: bool = False
@@ -276,6 +278,9 @@ class SessionCoordinator:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
 
+            if session.led_enabled:
+                await asyncio.to_thread(self._hardware.turn_leds_off)
+                session.led_enabled = False
             await asyncio.to_thread(self._hardware.turn_heater_off)
             session.heater_enabled = False
             await self._send_json(
@@ -377,6 +382,7 @@ class SessionCoordinator:
         try:
             session.test_active = True
             session.target_reached = False
+            session.led_enabled = await asyncio.to_thread(self._hardware.turn_leds_on)
             session.heater_enabled = await asyncio.to_thread(self._hardware.turn_heater_on)
             if not session.heater_enabled:
                 session.test_active = False
@@ -434,6 +440,10 @@ class SessionCoordinator:
                     },
                     session=session,
                 )
+            if session.led_enabled:
+                await asyncio.sleep(LED_OFF_DELAY_SECONDS)
+                await asyncio.to_thread(self._hardware.turn_leds_off)
+                session.led_enabled = False
             session.test_active = False
 
             if session.test_stop_event is test_stop_event:

@@ -45,6 +45,12 @@ class HardwareController:
     def turn_heater_off(self) -> bool:
         return self._relay_write(RELAY_CHANNEL, "off")
 
+    def turn_leds_on(self) -> bool:
+        return self._led_write(enabled=True)
+
+    def turn_leds_off(self) -> bool:
+        return self._led_write(enabled=False)
+
     def read_temperature_celsius(self) -> Optional[float]:
         sensor = self._ensure_sensor()
         if sensor is None:
@@ -73,6 +79,26 @@ class HardwareController:
             return True
         except Exception:
             LOGGER.exception("Relay command failed while switching heater %s", state)
+            return False
+
+    def _led_write(self, enabled: bool) -> bool:
+        state = "on" if enabled else "off"
+
+        try:
+            from Led_control.gpio_control import off_led, on_led
+        except Exception:
+            LOGGER.exception("LED GPIO control import failed; unable to switch LEDs %s", state)
+            return False
+
+        try:
+            if enabled:
+                on_led()
+            else:
+                off_led()
+            LOGGER.info("LED control outputs set to %s", state)
+            return True
+        except Exception:
+            LOGGER.exception("LED GPIO control failed while switching LEDs %s", state)
             return False
 
     def _resolve_relay_command(self) -> Optional[Path]:
